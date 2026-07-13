@@ -1,0 +1,26 @@
+{
+  "name": "mediassist-ai",
+  "version": "1.0.0",
+  "description": "MediAssist AI - Smart Prescription & Medication Assistant",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve . -p 3000",
+    "dev": "npx serve . -p 3000 --cors",
+    "build": "echo 'Static web app - no build needed'"
+  },
+  "keywords": [
+    "healthcare",
+    "prescription",
+    "medication",
+    "AI",
+    "OCR"
+  ],
+  "author": "MediAssist AI Team",
+  "license": "MIT",
+  "dependencies": {
+    "opencode-ai": "^1.17.18"
+  },
+  "devDependencies": {
+    "serve": "^14.2.0"
+  }
+}

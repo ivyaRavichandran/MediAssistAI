@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediAssist AI - Smart Prescription & Medication Assistant</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0077b6">
+    <meta name="description" content="AI-powered prescription interpretation and smart medication assistant">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loader">
+            <i class="fas fa-heartbeat pulse"></i>
+            <h2>MediAssist AI</h2>
+            <p>Loading your health companion...</p>
+        </div>
+    </div>
+
+    <!-- Auth Section -->
+    <div id="auth-section" class="auth-section hidden">
+        <div class="auth-container">
+            <div class="auth-brand">
+                <i class="fas fa-heartbeat"></i>
+                <h1>MediAssist AI</h1>
+                <p>Your Intelligent Healthcare Companion</p>
+            </div>
+
+            <!-- Login Form -->
+            <div id="login-form" class="auth-form">
+                <h2>Welcome Back</h2>
+                <form onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label><i class="fas fa-envelope"></i> Email</label>
+                        <input type="email" id="login-email" required placeholder="Enter your email">
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fas fa-lock"></i> Password</label>
+                        <input type="password" id="login-password" required placeholder="Enter your password">
+                    </div>
+                    <button type="submit" class="btn-primary btn-full">
+                        <i class="fas fa-sign-in-alt"></i> Sign In
+                    </button>
+                </form>
+                <p class="auth-switch">Don't have an account? <a href="#" onclick="showRegister()">Sign Up</a></p>
+            </div>
+
+            <!-- Register Form -->
+            <div id="register-form" class="auth-form hidden">
+                <h2>Create Account</h2>
+                <form onsubmit="handleRegister(event)">
+                    <div class="form-group">
+                        <label><i class="fas fa-user"></i> Full Name</label>
+                        <input type="text" id="reg-name" required placeholder="Enter your name">
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fas fa-envelope"></i> Email</label>
+                        <input type="email" id="reg-email" required placeholder="Enter your email">
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fas fa-phone"></i> Phone</label>
+                        <input type="tel" id="reg-phone" placeholder="Phone number">
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fas fa-lock"></i> Password</label>
+                        <input type="password" id="reg-password" required placeholder="Create password">
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fas fa-birthday-cake"></i> Date of Birth</label>
+                        <input type="date" id="reg-dob">
+                    </div>
+                    <button type="submit" class="btn-primary btn-full">
+                        <i class="fas fa-user-plus"></i> Create Account
+                    </button>
+                </form>
+                <p class="auth-switch">Already have an account? <a href="#" onclick="showLogin()">Sign In</a></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="app" class="app hidden">
+        <!-- Sidebar -->
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-brand">
+                <i class="fas fa-heartbeat"></i>
+                <span>MediAssist AI</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-page="dashboard" onclick="navigateTo('dashboard')">
+                    <i class="fas fa-home"></i><span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-page="upload" onclick="navigateTo('upload')">
+                    <i class="fas fa-cloud-upload-alt"></i><span>Upload Prescription</span>
+                </a>
+                <a href="#" class="nav-item" data-page="medications" onclick="navigateTo('medications')">
+                    <i class="fas fa-pills"></i><span>My Medications</span>
+                </a>
+                <a href="#" class="nav-item" data-page="interactions" onclick="navigateTo('interactions')">
+                    <i class="fas fa-exchange-alt"></i><span>Drug Interactions</span>
+                </a>
+                <a href="#" class="nav-item" data-page="reminders" onclick="navigateTo('reminders')">
+                    <i class="fas fa-bell"></i><span>Reminders</span>
+                </a>
+                <a href="#" class="nav-item" data-page="medicine-info" onclick="navigateTo('medicine-info')">
+                    <i class="fas fa-pills"></i><span>Medicine Lookup</span>
+                </a>
+                <a href="#" class="nav-item" data-page="pill-identifier" onclick="navigateTo('pill-identifier')">
+                    <i class="fas fa-search"></i><span>Pill Identifier</span>
+                </a>
+                <a href="#" class="nav-item" data-page="history" onclick="navigateTo('history')">
+                    <i class="fas fa-history"></i><span>History</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="btn-logout" onclick="handleLogout()">
+                    <i class="fas fa-sign-out-alt"></i><span>Logout</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Mobile Header -->
+        <header class="mobile-header">
+            <button class="menu-toggle" onclick="toggleSidebar()">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="mobile-brand">
+                <i class="fas fa-heartbeat"></i>
+                <span>MediAssist AI</span>
+            </div>
+            <button class="notification-btn" onclick="navigateTo('reminders')">
+                <i class="fas fa-bell"></i>
+                <span id="notification-badge" class="badge hidden">0</span>
+            </button>
+        </header>
+
+        <!-- Main Content -->
+        <main id="main-content" class="main-content">
+            <!-- Dashboard Page -->
+            <section id="page-dashboard" class="page active">
+                <div class="page-header">
+                    <h1>Dashboard</h1>
+                    <p id="greeting">Good morning!</p>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card" onclick="navigateTo('medications')">
+                        <div class="stat-icon" style="background: #e8f5e9;">
+                            <i class="fas fa-pills" style="color: #4caf50;"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="stat-medications">0</h3>
+                            <p>Active Medications</p>
+                        </div>
+                    </div>
+                    <div class="stat-card" onclick="navigateTo('reminders')">
+                        <div class="stat-icon" style="background: #e3f2fd;">
+                            <i class="fas fa-bell" style="color: #2196f3;"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="stat-reminders">0</h3>
+                            <p>Today's Reminders</p>
+                        </div>
+                    </div>
+                    <div class="stat-card" onclick="navigateTo('upload')">
+                        <div class="stat-icon" style="background: #fff3e0;">
+                            <i class="fas fa-file-medical" style="color: #ff9800;"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="stat-prescriptions">0</h3>
+                            <p>Prescriptions</p>
+                        </div>
+                    </div>
+                    <div class="stat-card" onclick="navigateTo('interactions')">
+                        <div class="stat-icon" style="background: #fce4ec;">
+                            <i class="fas fa-exclamation-triangle" style="color: #f44336;"></i>
+                        </div>
+                        <div class="stat-info">
+                            <h3 id="stat-warnings">0</h3>
+                            <p>Interactions Found</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card upcoming-reminders">
+                        <div class="card-header">
+                            <h2><i class="fas fa-clock"></i> Upcoming Medications</h2>
+                        </div>
+                        <div id="dashboard-reminders" class="card-body">
+                            <p class="empty-state">No upcoming medications</p>
+                        </div>
+                    </div>
+
+                    <div class="card recent-prescriptions">
+                        <div class="card-header">
+                            <h2><i class="fas fa-file-medical"></i> Recent Prescriptions</h2>
+                        </div>
+                        <div id="dashboard-prescriptions" class="card-body">
+                            <p class="empty-state">No prescriptions uploaded</p>
+                        </div>
+                    </div>
+
+                    <div class="card quick-actions">
+                        <div class="card-header">
+                            <h2><i class="fas fa-bolt"></i> Quick Actions</h2>
+                        </div>
+                        <div class="card-body">
+                            <button class="action-btn" onclick="navigateTo('upload')">
+                                <i class="fas fa-camera"></i>
+                                <span>Scan Prescription</span>
+                            </button>
+                            <button class="action-btn" onclick="navigateTo('medicine-info')">
+                                <i class="fas fa-search"></i>
+                                <span>Look Up Medicine</span>
+                            </button>
+                            <button class="action-btn" onclick="navigateTo('interactions')">
+                                <i class="fas fa-exchange-alt"></i>
+                                <span>Check Interactions</span>
+                            </button>
+                            <button class="action-btn" onclick="navigateTo('pill-identifier')">
+                                <i class="fas fa-pills"></i>
+                                <span>Identify Pill</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card health-tips">
+                        <div class="card-header">
+                            <h2><i class="fas fa-lightbulb"></i> Health Tips</h2>
+                        </div>
+                        <div class="card-body">
+                            <div class="tip-item">
+                                <i class="fas fa-check-circle" style="color: #4caf50;"></i>
+                                <p>Always take medications at the same time daily for best results.</p>
+                            </div>
+                            <div class="tip-item">
+                                <i class="fas fa-check-circle" style="color: #2196f3;"></i>
+                                <p>Stay hydrated - drink at least 8 glasses of water daily.</p>
+                            </div>
+                            <div class="tip-item">
+                                <i class="fas fa-check-circle" style="color: #ff9800;"></i>
+                                <p>Never skip doses without consulting your doctor first.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Upload Prescription Page -->
+            <section id="page-upload" class="page">
+                <div class="page-header">
+                    <h1>Upload Prescription</h1>
+                    <p>Upload or capture your medical prescription for analysis</p>
+                </div>
+
+                <div class="upload-container">
+                    <div class="upload-area" id="upload-area">
+                        <div class="upload-content">
+                            <i class="fas fa-cloud-upload-alt upload-icon"></i>
+                            <h2>Drop your prescription here</h2>
+                            <p>or click to browse files</p>
+                            <p class="upload-hint">Supports: JPG, PNG, PDF (Max 10MB)</p>
+                            <input type="file" id="file-input" accept="image/*,.pdf" hidden>
+                            <button class="btn-primary" onclick="document.getElementById('file-input').click()">
+                                <i class="fas fa-upload"></i> Choose File
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="upload-options">
+                        <h3>Or capture directly</h3>
+                        <button class="btn-secondary" onclick="captureImage()">
+                            <i class="fas fa-camera"></i> Take Photo
+                        </button>
+                    </div>
+
+                    <!-- Preview Section -->
+                    <div id="preview-section" class="hidden">
+                        <div class="card">
+                            <div class="card-header">
+                                <h2><i class="fas fa-image"></i> Prescription Preview</h2>
+                                <button class="btn-icon" onclick="clearUpload()">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="preview-container">
+                                    <img id="preview-image" src="" alt="Prescription Preview">
+                                </div>
+                                <div class="upload-actions">
+                                    <button class="btn-primary" onclick="processPrescription()">
+                                        <i class="fas fa-magic"></i> Process with AI
+                                    </button>
+                                    <button class="btn-secondary" onclick="clearUpload()">
+                                        <i class="fas fa-redo"></i> Upload Different
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Processing Status -->
+                    <div id="processing-section" class="hidden">
+                        <div class="card">
+                            <div class="card-header">
+                                <h2><i class="fas fa-cog fa-spin"></i> Processing...</h2>
+                            </div>
+                            <div class="card-body">
+                                <div class="processing-steps">
+                                    <div class="step" id="step-1">
+                                        <i class="fas fa-circle-notch fa-spin"></i>
+                                        <span>Extracting text with OCR...</span>
+                                    </div>
+                                    <div class="step" id="step-2">
+                                        <i class="fas fa-circle"></i>
+                                        <span>Analyzing with AI...</span>
+                                    </div>
+                                    <div class="step" id="step-3">
+                                        <i class="fas fa-circle"></i>
+                                        <span>Identifying medications...</span>
+                                    </div>
+                                    <div class="step" id="step-4">
+                                        <i class="fas fa-circle"></i>
+                                        <span>Checking interactions...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Results Section -->
+                    <div id="results-section" class="hidden">
+                        <div class="card">
+                            <div class="card-header">
+                                <h2><i class="fas fa-file-medical-alt"></i> Prescription Analysis</h2>
+                                <div class="header-actions">
+                                    <button class="btn-icon" onclick="readAloud()" title="Read Aloud">
+                                        <i class="fas fa-volume-up"></i>
+                                    </button>
+                                    <button class="btn-icon" onclick="downloadReport()" title="Download Report">
+                                        <i class="fas fa-download"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="results-content">
+                                    <div class="result-section">
+                                        <h3><i class="fas fa-user-md"></i> Doctor Information</h3>
+                                        <p id="result-doctor">-</p>
+                                    </div>
+                                    <div class="result-section">
+                                        <h3><i class="fas fa-calendar"></i> Date</h3>
+                                        <p id="result-date">-</p>
+                                    </div>
+                                    <div class="result-section">
+                                        <h3><i class="fas fa-notes-medical"></i> Diagnosis</h3>
+                                        <p id="result-diagnosis">-</p>
+                                    </div>
+                                    <div class="result-section">
+                                        <h3><i class="fas fa-pills"></i> Medications</h3>
+                                        <div id="result-medications" class="medications-list"></div>
+                                    </div>
+                                    <div class="result-section">
+                                        <h3><i class="fas fa-exclamation-triangle"></i> Warnings</h3>
+                                        <div id="result-warnings" class="warnings-list"></div>
+                                    </div>
+                                </div>
+                                <div class="results-actions">
+                                    <button class="btn-primary" onclick="addToMedications()">
+                                        <i class="fas fa-plus"></i> Add to My Medications
+                                    </button>
+                                    <button class="btn-secondary" onclick="checkInteractionsFromResults()">
+                                        <i class="fas fa-exchange-alt"></i> Check Interactions
+                                    </button>
+                                    <button class="btn-secondary" onclick="setRemindersFromResults()">
+                                        <i class="fas fa-bell"></i> Set Reminders
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Medications Page -->
+            <section id="page-medications" class="page">
+                <div class="page-header">
+                    <h1>My Medications</h1>
+                    <p>Manage your current medications and track adherence</p>
+                </div>
+
+                <div class="medications-header">
+                    <button class="btn-primary" onclick="showAddMedicationModal()">
+                        <i class="fas fa-plus"></i> Add Medication
+                    </button>
+                </div>
+
+                <div id="medications-container" class="medications-grid">
+                    <div class="empty-state-card">
+                        <i class="fas fa-pills"></i>
+                        <h3>No Medications Yet</h3>
+                        <p>Add your medications or upload a prescription to get started</p>
+                        <button class="btn-primary" onclick="navigateTo('upload')">
+                            <i class="fas fa-cloud-upload-alt"></i> Upload Prescription
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Drug Interactions Page -->
+            <section id="page-interactions" class="page">
+                <div class="page-header">
+                    <h1>Drug Interaction Checker</h1>
+                    <p>Check for potential interactions between your medications</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-exchange-alt"></i> Check Interactions</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="interaction-form">
+                            <div class="form-group">
+                                <label>Select medications to check (minimum 2):</label>
+                                <div id="interaction-drugs-list" class="drugs-selection"></div>
+                            </div>
+                            <div class="form-group">
+                                <label>Or enter drugs manually (comma separated):</label>
+                                <input type="text" id="manual-drugs" placeholder="e.g., aspirin, ibuprofen, warfarin">
+                            </div>
+                            <button class="btn-primary" onclick="checkInteractions()">
+                                <i class="fas fa-search"></i> Check Interactions
+                            </button>
+                        </div>
+
+                        <div id="interaction-results" class="hidden">
+                            <h3><i class="fas fa-exclamation-triangle"></i> Interaction Results</h3>
+                            <div id="interaction-list" class="interaction-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Reminders Page -->
+            <section id="page-reminders" class="page">
+                <div class="page-header">
+                    <h1>Medication Reminders</h1>
+                    <p>Never miss a dose with smart reminders</p>
+                </div>
+
+                <div class="reminders-header">
+                    <button class="btn-primary" onclick="showAddReminderModal()">
+                        <i class="fas fa-plus"></i> Add Reminder
+                    </button>
+                    <label class="toggle-label">
+                        <input type="checkbox" id="enable-notifications" onchange="toggleNotifications()">
+                        <span class="toggle-slider"></span>
+                        Enable Notifications
+                    </label>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-calendar-day"></i> Today's Schedule</h2>
+                    </div>
+                    <div id="today-schedule" class="card-body">
+                        <div class="empty-state-card">
+                            <i class="fas fa-bell-slash"></i>
+                            <h3>No Reminders Set</h3>
+                            <p>Add medication reminders to stay on track</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-calendar-alt"></i> All Reminders</h2>
+                    </div>
+                    <div id="all-reminders" class="card-body">
+                        <p class="empty-state">No reminders configured</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Medicine Info Page -->
+            <section id="page-medicine-info" class="page">
+                <div class="page-header">
+                    <h1>Medicine Lookup</h1>
+                    <p>Get detailed information about any medicine</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-search"></i> Search Medicine</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="search-form">
+                            <div class="search-box">
+                                <input type="text" id="medicine-search" placeholder="Enter medicine name..." onkeypress="if(event.key==='Enter')searchMedicine()">
+                                <button class="btn-primary" onclick="searchMedicine()">
+                                    <i class="fas fa-search"></i>
+                                </button>
+                            </div>
+                            <div class="search-suggestions" id="search-suggestions"></div>
+                        </div>
+
+                        <div id="medicine-details" class="hidden">
+                            <div class="medicine-detail-card">
+                                <div class="medicine-header">
+                                    <h2 id="medicine-name">-</h2>
+                                    <span id="medicine-type" class="badge">-</span>
+                                </div>
+                                <div class="medicine-body">
+                                    <div class="detail-section">
+                                        <h3><i class="fas fa-info-circle"></i> Description</h3>
+                                        <p id="medicine-description">-</p>
+                                    </div>
+                                    <div class="detail-section">
+                                        <h3><i class="fas fa-pills"></i> Available Forms</h3>
+                                        <div id="medicine-forms">-</div>
+                                    </div>
+                                    <div class="detail-section">
+                                        <h3><i class="fas fa-balance-scale"></i> Dosage</h3>
+                                        <p id="medicine-dosage">-</p>
+                                    </div>
+                                    <div class="detail-section">
+                                        <h3><i class="fas fa-exclamation-triangle"></i> Side Effects</h3>
+                                        <div id="medicine-side-effects">-</div>
+                                    </div>
+                                    <div class="detail-section">
+                                        <h3><i class="fas fa-exchange-alt"></i> Interactions</h3>
+                                        <div id="medicine-interactions">-</div>
+                                    </div>
+                                    <div class="detail-section">
+                                        <h3><i class="fas fa-dollar-sign"></i> Price Estimation</h3>
+                                        <p id="medicine-price">-</p>
+                                    </div>
+                                    <div class="detail-section">
+                                        <h3><i class="fas fa-sync-alt"></i> Substitutes</h3>
+                                        <div id="medicine-substitutes">-</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Pill Identifier Page -->
+            <section id="page-pill-identifier" class="page">
+                <div class="page-header">
+                    <h1>Pill Identifier</h1>
+                    <p>Identify unknown pills by their appearance</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-search"></i> Pill Details</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="pill-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label><i class="fas fa-palette"></i> Color</label>
+                                    <select id="pill-color">
+                                        <option value="">Select color</option>
+                                        <option value="white">White</option>
+                                        <option value="blue">Blue</option>
+                                        <option value="red">Red</option>
+                                        <option value="green">Green</option>
+                                        <option value="yellow">Yellow</option>
+                                        <option value="orange">Orange</option>
+                                        <option value="pink">Pink</option>
+                                        <option value="purple">Purple</option>
+                                        <option value="brown">Brown</option>
+                                        <option value="gray">Gray</option>
+                                        <option value="black">Black</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label><i class="fas fa-shapes"></i> Shape</label>
+                                    <select id="pill-shape">
+                                        <option value="">Select shape</option>
+                                        <option value="round">Round</option>
+                                        <option value="oval">Oval</option>
+                                        <option value="capsule">Capsule</option>
+                                        <option value="oblong">Oblong</option>
+                                        <option value="square">Square</option>
+                                        <option value="diamond">Diamond</option>
+                                        <option value="triangle">Triangle</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label><i class="fas fa-text-width"></i> Imprint</label>
+                                    <input type="text" id="pill-imprint" placeholder="Letters/numbers on pill">
+                                </div>
+                                <div class="form-group">
+                                    <label><i class="fas fa-ruler"></i> Size</label>
+                                    <select id="pill-size">
+                                        <option value="">Select size</option>
+                                        <option value="small">Small (< 8mm)</option>
+                                        <option value="medium">Medium (8-12mm)</option>
+                                        <option value="large">Large (> 12mm)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button class="btn-primary" onclick="identifyPill()">
+                                <i class="fas fa-search"></i> Identify Pill
+                            </button>
+                        </div>
+
+                        <div id="pill-results" class="hidden">
+                            <h3><i class="fas fa-pills"></i> Possible Matches</h3>
+                            <div id="pill-matches" class="pill-matches"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- History Page -->
+            <section id="page-history" class="page">
+                <div class="page-header">
+                    <h1>History</h1>
+                    <p>View your prescription and medication history</p>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-history"></i> Activity History</h2>
+                    </div>
+                    <div class="card-body">
+                        <div id="history-list" class="history-list">
+                            <div class="empty-state-card">
+                                <i class="fas fa-history"></i>
+                                <h3>No History Yet</h3>
+                                <p>Your activity will appear here</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Add Medication Modal -->
+    <div id="add-medication-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Add Medication</h2>
+                <button class="btn-icon" onclick="closeModal('add-medication-modal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <form onsubmit="addMedication(event)">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Medicine Name *</label>
+                        <input type="text" id="med-name" required placeholder="e.g., Paracetamol">
+                    </div>
+                    <div class="form-group">
+                        <label>Dosage *</label>
+                        <input type="text" id="med-dosage" required placeholder="e.g., 500mg">
+                    </div>
+                    <div class="form-group">
+                        <label>Frequency *</label>
+                        <select id="med-frequency" required>
+                            <option value="">Select frequency</option>
+                            <option value="once-daily">Once Daily</option>
+                            <option value="twice-daily">Twice Daily</option>
+                            <option value="three-times">Three Times Daily</option>
+                            <option value="four-times">Four Times Daily</option>
+                            <option value="as-needed">As Needed</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Times *</label>
+                        <input type="time" id="med-time" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Duration</label>
+                        <select id="med-duration">
+                            <option value="7">7 Days</option>
+                            <option value="14">14 Days</option>
+                            <option value="30" selected>30 Days</option>
+                            <option value="90">90 Days</option>
+                            <option value="ongoing">Ongoing</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Notes</label>
+                        <textarea id="med-notes" placeholder="e.g., Take with food"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary" onclick="closeModal('add-medication-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Add Medication</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add Reminder Modal -->
+    <div id="add-reminder-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Add Reminder</h2>
+                <button class="btn-icon" onclick="closeModal('add-reminder-modal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <form onsubmit="addReminder(event)">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Medication *</label>
+                        <select id="reminder-medication" required>
+                            <option value="">Select medication</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Time *</label>
+                        <input type="time" id="reminder-time" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Repeat *</label>
+                        <select id="reminder-repeat" required>
+                            <option value="daily">Daily</option>
+                            <option value="weekdays">Weekdays Only</option>
+                            <option value="specific">Specific Days</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Days (if specific)</label>
+                        <div class="days-checkbox">
+                            <label><input type="checkbox" value="Mon"> Mon</label>
+                            <label><input type="checkbox" value="Tue"> Tue</label>
+                            <label><input type="checkbox" value="Wed"> Wed</label>
+                            <label><input type="checkbox" value="Thu"> Thu</label>
+                            <label><input type="checkbox" value="Fri"> Fri</label>
+                            <label><input type="checkbox" value="Sat"> Sat</label>
+                            <label><input type="checkbox" value="Sun"> Sun</label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Before/After Meal</label>
+                        <select id="reminder-meal">
+                            <option value="any">Any</option>
+                            <option value="before">Before Meal</option>
+                            <option value="after">After Meal</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary" onclick="closeModal('add-reminder-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary">Add Reminder</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden">
+        <i class="fas fa-check-circle"></i>
+        <span id="toast-message"></span>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/app.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="js/prescription.js"></script>
+    <script src="js/medications.js"></script>
+    <script src="js/interactions.js"></script>
+    <script src="js/reminders.js"></script>
+    <script src="js/medicine-info.js"></script>
+
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(reg => console.log('Service Worker registered:', reg.scope))
+                    .catch(err => console.log('Service Worker registration failed:', err));
+            });
+        }
+    </script>
+</body>
+</html>
