@@ -7,46 +7,95 @@ const App = {
     history: [],
     currentPage: 'dashboard',
 
-    // Initialize app
     init() {
-        this.loadData();
-        this.checkAuth();
         this.setupDragDrop();
         this.setupFileInput();
         this.setupNotifications();
+
+        auth.onAuthStateChanged(async (user) => {
+            if (user) {
+                this.currentUser = {
+                    uid: user.uid,
+                    name: user.displayName || user.email.split('@')[0],
+                    email: user.email
+                };
+
+                try {
+                    const userDoc = await db.collection('users').doc(user.uid).get();
+                    if (userDoc.exists) {
+                        const data = userDoc.data();
+                        this.currentUser = { ...this.currentUser, ...data, uid: user.uid };
+                    }
+                } catch (e) {
+                    console.log('Could not load user profile:', e);
+                }
+
+                await this.loadFromFirestore();
+                this.showApp();
+            } else {
+                this.currentUser = null;
+                this.medications = [];
+                this.prescriptions = [];
+                this.reminders = [];
+                this.history = [];
+                this.showAuth();
+            }
+
+            setTimeout(() => {
+                document.getElementById('loading-screen').style.opacity = '0';
+                setTimeout(() => {
+                    document.getElementById('loading-screen').classList.add('hidden');
+                }, 500);
+            }, 1500);
+        });
     },
 
-    // Data persistence
-    saveData() {
+    async saveToFirestore() {
+        if (!FB.userId()) return;
+        try {
+            await FB.saveAll({
+                medications: this.medications,
+                prescriptions: this.prescriptions,
+                reminders: this.reminders,
+                history: this.history
+            });
+        } catch (e) {
+            console.error('Firestore save error:', e.code || e.message || e);
+            this.saveToLocalFallback();
+        }
+    },
+
+    async loadFromFirestore() {
+        if (!FB.userId()) return;
+        try {
+            const data = await FB.loadAll();
+            this.medications = data.medications;
+            this.prescriptions = data.prescriptions;
+            this.reminders = data.reminders;
+            this.history = data.history;
+        } catch (e) {
+            console.error('Firestore load error:', e);
+            this.loadFromLocalFallback();
+        }
+    },
+
+    saveToLocalFallback() {
         localStorage.setItem('mediassist_medications', JSON.stringify(this.medications));
         localStorage.setItem('mediassist_prescriptions', JSON.stringify(this.prescriptions));
         localStorage.setItem('mediassist_reminders', JSON.stringify(this.reminders));
         localStorage.setItem('mediassist_history', JSON.stringify(this.history));
     },
 
-    loadData() {
+    loadFromLocalFallback() {
         this.medications = JSON.parse(localStorage.getItem('mediassist_medications') || '[]');
         this.prescriptions = JSON.parse(localStorage.getItem('mediassist_prescriptions') || '[]');
         this.reminders = JSON.parse(localStorage.getItem('mediassist_reminders') || '[]');
         this.history = JSON.parse(localStorage.getItem('mediassist_history') || '[]');
     },
 
-    checkAuth() {
-        const user = localStorage.getItem('mediassist_user');
-        if (user) {
-            this.currentUser = JSON.parse(user);
-            this.showApp();
-        } else {
-            this.showAuth();
-        }
-
-        // Hide loading screen
-        setTimeout(() => {
-            document.getElementById('loading-screen').style.opacity = '0';
-            setTimeout(() => {
-                document.getElementById('loading-screen').classList.add('hidden');
-            }, 500);
-        }, 1500);
+    saveData() {
+        this.saveToLocalFallback();
+        this.saveToFirestore().catch(e => console.error('Firestore save failed:', e));
     },
 
     showAuth() {
@@ -60,9 +109,14 @@ const App = {
         this.updateDashboard();
         this.updateGreeting();
         setupReminders();
+
+        const saved = JSON.parse(localStorage.getItem('mediassist_wearable') || '{}');
+        if (typeof WearableSimulator !== 'undefined' && !WearableSimulator.isRunning) {
+            WearableSimulator.init(saved.profile || 'normal');
+            WearableSimulator.start();
+        }
     },
 
-    // Navigation
     navigateTo(page) {
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -74,11 +128,7 @@ const App = {
         if (navEl) navEl.classList.add('active');
 
         this.currentPage = page;
-
-        // Close mobile sidebar
         document.getElementById('sidebar').classList.remove('open');
-
-        // Refresh page data
         this.refreshPage(page);
     },
 
@@ -98,6 +148,9 @@ const App = {
                 break;
             case 'history':
                 renderHistory();
+                break;
+            case 'wearable':
+                if (typeof initWearablePage === 'function') initWearablePage();
                 break;
         }
     },
@@ -125,7 +178,6 @@ const App = {
         this.renderDashboardReminders(todayReminders);
         this.renderDashboardPrescriptions();
 
-        // Update notification badge
         const badge = document.getElementById('notification-badge');
         if (todayReminders.length > 0) {
             badge.textContent = todayReminders.length;
@@ -136,7 +188,6 @@ const App = {
     },
 
     getTodayReminders() {
-        const today = new Date().toISOString().split('T')[0];
         return this.reminders.filter(r => {
             if (!r.active) return false;
             if (r.repeat === 'daily') return true;
@@ -172,7 +223,7 @@ const App = {
                             <h4>${med?.name || 'Unknown'}</h4>
                             <p>${med?.dosage || ''} ${r.mealBefore ? '- Before meal' : r.mealAfter ? '- After meal' : ''}</p>
                         </div>
-                        <button class="btn-take-dose ${taken ? 'taken' : ''}" 
+                        <button class="btn-take-dose ${taken ? 'taken' : ''}"
                             onclick="markDoseTaken('${r.id}', '${med?.name || ''}')">
                             ${taken ? 'Taken' : 'Take'}
                         </button>
@@ -206,7 +257,7 @@ const App = {
 
     addHistory(type, title, details) {
         this.history.push({
-            id: Date.now(),
+            id: generateId(),
             type,
             title,
             details,
@@ -215,15 +266,13 @@ const App = {
         this.saveData();
     },
 
-    // Notifications setup
     setupNotifications() {
         if ('Notification' in window) {
             const toggle = document.getElementById('enable-notifications');
-            toggle.checked = Notification.permission === 'granted';
+            if (toggle) toggle.checked = Notification.permission === 'granted';
         }
     },
 
-    // Drag and drop
     setupDragDrop() {
         const uploadArea = document.getElementById('upload-area');
         if (!uploadArea) return;
@@ -353,7 +402,6 @@ function getTimeAgo(date) {
     return `${days}d ago`;
 }
 
-// Global navigation function
 function navigateTo(page) {
     App.navigateTo(page);
 }

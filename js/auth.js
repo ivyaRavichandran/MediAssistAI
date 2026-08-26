@@ -1,4 +1,4 @@
-// ===== Authentication Module =====
+// ===== Authentication Module (Firebase Auth) =====
 
 function showLogin() {
     document.getElementById('login-form').classList.remove('hidden');
@@ -10,46 +10,32 @@ function showRegister() {
     document.getElementById('register-form').classList.remove('hidden');
 }
 
-function handleLogin(e) {
+async function handleLogin(e) {
     e.preventDefault();
     const email = document.getElementById('login-email').value;
     const password = document.getElementById('login-password').value;
 
-    // Demo login / local auth
-    const users = JSON.parse(localStorage.getItem('mediassist_users') || '[]');
-    const user = users.find(u => u.email === email && u.password === password);
+    if (!email || !password) {
+        showToast('Please fill in all fields', 'error');
+        return;
+    }
 
-    if (user) {
-        App.currentUser = user;
-        localStorage.setItem('mediassist_user', JSON.stringify(user));
-        App.showApp();
-        showToast(`Welcome back, ${user.name}!`);
-    } else {
-        // Allow demo login with any credentials
-        if (email && password) {
-            const demoUser = {
-                id: generateId(),
-                name: email.split('@')[0],
-                email: email,
-                phone: '',
-                dob: ''
-            };
-            App.currentUser = demoUser;
-            localStorage.setItem('mediassist_user', JSON.stringify(demoUser));
-
-            // Save to users list
-            users.push({ ...demoUser, password });
-            localStorage.setItem('mediassist_users', JSON.stringify(users));
-
-            App.showApp();
-            showToast(`Welcome, ${demoUser.name}!`);
+    try {
+        await auth.signInWithEmailAndPassword(email, password);
+    } catch (err) {
+        if (err.code === 'auth/user-not-found') {
+            showToast('No account found with this email', 'error');
+        } else if (err.code === 'auth/wrong-password') {
+            showToast('Incorrect password', 'error');
+        } else if (err.code === 'auth/invalid-credential') {
+            showToast('Invalid email or password', 'error');
         } else {
-            showToast('Invalid credentials', 'error');
+            showToast(err.message, 'error');
         }
     }
 }
 
-function handleRegister(e) {
+async function handleRegister(e) {
     e.preventDefault();
     const name = document.getElementById('reg-name').value;
     const email = document.getElementById('reg-email').value;
@@ -62,50 +48,46 @@ function handleRegister(e) {
         return;
     }
 
-    const users = JSON.parse(localStorage.getItem('mediassist_users') || '[]');
-
-    if (users.find(u => u.email === email)) {
-        showToast('Email already registered', 'error');
+    if (password.length < 6) {
+        showToast('Password must be at least 6 characters', 'error');
         return;
     }
 
-    const newUser = {
-        id: generateId(),
-        name,
-        email,
-        phone,
-        dob,
-        password
-    };
-
-    users.push(newUser);
-    localStorage.setItem('mediassist_users', JSON.stringify(users));
-
-    const { password: _, ...userWithoutPassword } = newUser;
-    App.currentUser = userWithoutPassword;
-    localStorage.setItem('mediassist_user', JSON.stringify(userWithoutPassword));
-
-    App.showApp();
-    showToast(`Welcome to MediAssist AI, ${name}!`);
+    try {
+        const cred = await auth.createUserWithEmailAndPassword(email, password);
+        await FB.saveUser({ name, email, phone, dob });
+        showToast(`Welcome to MediAssist AI, ${name}!`);
+    } catch (err) {
+        if (err.code === 'auth/email-already-in-use') {
+            showToast('Email already registered. Try signing in.', 'error');
+        } else if (err.code === 'auth/weak-password') {
+            showToast('Password is too weak', 'error');
+        } else if (err.code === 'auth/invalid-email') {
+            showToast('Invalid email address', 'error');
+        } else {
+            showToast(err.message, 'error');
+        }
+    }
 }
 
-function handleLogout() {
-    App.currentUser = null;
-    localStorage.removeItem('mediassist_user');
-    App.showAuth();
-    showToast('Logged out successfully');
+async function handleLogout() {
+    try {
+        await auth.signOut();
+        App.currentUser = null;
+        App.showAuth();
+        showToast('Logged out successfully');
+    } catch (err) {
+        showToast('Logout failed: ' + err.message, 'error');
+    }
 }
 
-// Sidebar toggle for mobile
 function toggleSidebar() {
     document.getElementById('sidebar').classList.toggle('open');
 }
 
-// Close sidebar when clicking outside on mobile
 document.addEventListener('click', (e) => {
     const sidebar = document.getElementById('sidebar');
     const menuToggle = document.querySelector('.menu-toggle');
-
     if (sidebar && sidebar.classList.contains('open') &&
         !sidebar.contains(e.target) && !menuToggle?.contains(e.target)) {
         sidebar.classList.remove('open');

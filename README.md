@@ -53,6 +53,11 @@ An AI-powered web application that interprets medical prescriptions and assists 
 - Local data persistence with localStorage
 - Works without internet connection
 
+### 9. Wearable simulation
+- simulate the health readings from a smart watch
+- in emergency cases notify the emergency contact
+
+
 ---
 
 ## Technology Stack

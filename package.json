@@ -18,7 +18,7 @@
   "author": "MediAssist AI Team",
   "license": "MIT",
   "dependencies": {
-    "opencode-ai": "^1.17.18"
+    "opencode-ai": "^1.18.23"
   },
   "devDependencies": {
     "serve": "^14.2.0"
