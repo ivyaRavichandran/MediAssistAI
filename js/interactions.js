@@ -204,7 +204,7 @@ function removeInteractionDrug(el, name) {
     el.parentElement.remove();
 }
 
-function checkInteractions() {
+async function checkInteractions() {
     const manualInput = document.getElementById('manual-drugs').value;
     const chipDrugs = Array.from(document.querySelectorAll('#interaction-drugs-list .drug-chip span:first-child'))
         .map(el => el.textContent.trim());
@@ -224,8 +224,109 @@ function checkInteractions() {
         return;
     }
 
+    showToast('Checking interactions...', 'info');
+
+    let results = [];
+
+    // Try RxNav API first
+    try {
+        results = await checkInteractionsRxNav(drugs);
+    } catch (e) {
+        console.log('RxNav API failed, using local database:', e.message);
+    }
+
+    // Fallback to local database if API returned nothing
+    if (results.length === 0) {
+        results = checkInteractionsLocal(drugs);
+    }
+
+    displayInteractionResults(results, drugs);
+    App.addHistory('warning', 'Interactions Checked', `Checked ${drugs.length} drugs for interactions`);
+    App.saveData();
+}
+
+async function checkInteractionsRxNav(drugs) {
     const results = [];
 
+    // Step 1: Get RxCUI for each drug
+    const rxcuis = {};
+    for (const drug of drugs) {
+        try {
+            const resp = await fetch(`https://rxnav.nlm.nih.gov/REST/rxcui.json?name=${encodeURIComponent(drug)}`);
+            const data = await resp.json();
+            if (data.idGroup?.rxnormId?.length > 0) {
+                rxcuis[drug] = data.idGroup.rxnormId[0];
+            }
+        } catch (e) {
+            console.log(`Could not find RxCUI for ${drug}`);
+        }
+    }
+
+    const resolvedDrugs = Object.keys(rxcuis);
+    if (resolvedDrugs.length < 2) return results;
+
+    // Step 2: Check interactions between all pairs
+    for (let i = 0; i < resolvedDrugs.length; i++) {
+        for (let j = i + 1; j < resolvedDrugs.length; j++) {
+            const rxcui1 = rxcuis[resolvedDrugs[i]];
+            const rxcui2 = rxcuis[resolvedDrugs[j]];
+
+            try {
+                const resp = await fetch(
+                    `https://rxnav.nlm.nih.gov/REST/interaction/interaction.json?rxcuis=${rxcui1}+${rxcui2}&sources=DrugBank`
+                );
+                const data = await resp.json();
+
+                const interactionList = data.interactionTypegroup?.[0]?.interactionType || [];
+                for (const typeGroup of interactionList) {
+                    for (const pair of typeGroup.interactionPair || []) {
+                        const severityMap = { 'high': 'severe', 'minor': 'mild', 'moderate': 'moderate', 'severe': 'severe' };
+                        const severityKey = pair.severity?.toLowerCase() || 'moderate';
+
+                        results.push({
+                            drug1: resolvedDrugs[i],
+                            drug2: resolvedDrugs[j],
+                            severity: severityMap[severityKey] || 'moderate',
+                            description: pair.description || `Interaction between ${resolvedDrugs[i]} and ${resolvedDrugs[j]}`,
+                            source: pair.interactionConcept?.[0]?.sourceName || 'RxNav'
+                        });
+                    }
+                }
+            } catch (e) {
+                console.log(`Interaction check failed for ${resolvedDrugs[i]} + ${resolvedDrugs[j]}`);
+            }
+        }
+    }
+
+    return results;
+}
+
+function findInteraction(drug1, drug2) {
+    const d1 = drug1.toLowerCase();
+    const d2 = drug2.toLowerCase();
+
+    if (drugInteractionDB[d1]?.interactions?.[d2]) {
+        return drugInteractionDB[d1].interactions[d2];
+    }
+    if (drugInteractionDB[d2]?.interactions?.[d1]) {
+        return drugInteractionDB[d2].interactions[d1];
+    }
+
+    for (const key of Object.keys(drugInteractionDB)) {
+        if (d1.includes(key) || key.includes(d1)) {
+            for (const innerKey of Object.keys(drugInteractionDB[key].interactions || {})) {
+                if (d2.includes(innerKey) || innerKey.includes(d2)) {
+                    return drugInteractionDB[key].interactions[innerKey];
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+function checkInteractionsLocal(drugs) {
+    const results = [];
     for (let i = 0; i < drugs.length; i++) {
         for (let j = i + 1; j < drugs.length; j++) {
             const interaction = findInteraction(drugs[i], drugs[j]);
@@ -238,35 +339,7 @@ function checkInteractions() {
             }
         }
     }
-
-    displayInteractionResults(results, drugs);
-    App.addHistory('warning', 'Interactions Checked', `Checked ${drugs.length} drugs for interactions`);
-}
-
-function findInteraction(drug1, drug2) {
-    const d1 = drug1.toLowerCase();
-    const d2 = drug2.toLowerCase();
-
-    // Check both directions
-    if (drugInteractionDB[d1]?.interactions?.[d2]) {
-        return drugInteractionDB[d1].interactions[d2];
-    }
-    if (drugInteractionDB[d2]?.interactions?.[d1]) {
-        return drugInteractionDB[d2].interactions[d1];
-    }
-
-    // Fuzzy matching
-    for (const key of Object.keys(drugInteractionDB)) {
-        if (d1.includes(key) || key.includes(d1)) {
-            for (const innerKey of Object.keys(drugInteractionDB[key].interactions || {})) {
-                if (d2.includes(innerKey) || innerKey.includes(d2)) {
-                    return drugInteractionDB[key].interactions[innerKey];
-                }
-            }
-        }
-    }
-
-    return null;
+    return results;
 }
 
 function displayInteractionResults(results, drugs) {

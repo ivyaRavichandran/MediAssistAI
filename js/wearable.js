@@ -110,17 +110,10 @@ const WearableSimulator = {
         const p = this.profiles[this.config.user.healthProfile];
         this.config.user.restingHR = p.hrBase;
 
-        const saved = JSON.parse(localStorage.getItem('mediassist_wearable') || '{}');
-        if (saved.emergencyContacts) {
-            this.state.emergencyContacts = saved.emergencyContacts;
-        }
-        if (saved.totalStepsToday !== undefined) {
-            this.state.totalStepsToday = saved.totalStepsToday;
-        }
-
         this.startTime = Date.now();
         this.seedInitialHistory();
         this.generateSleepStages();
+        this.loadEmergencyContactsFromFirestore();
     },
 
     seedInitialHistory() {
@@ -443,14 +436,9 @@ const WearableSimulator = {
             });
         }
 
-        this.state.emergencyContacts.forEach(contact => {
-            if (Notification.permission === 'granted') {
-                new Notification(`Emergency: Health Alert for ${App.currentUser?.name || 'User'}`, {
-                    body: `${alertMsg}. Please check immediately!`,
-                    tag: `emergency-${contact.phone}`
-                });
-            }
-        });
+        if (this.state.emergencyContacts.length > 0) {
+            this.sendEmergencySMS(alerts);
+        }
 
         App.addHistory('warning', 'Emergency Alert', alertMsg);
         App.saveData();
@@ -460,6 +448,40 @@ const WearableSimulator = {
         setTimeout(() => {
             this.state.isEmergencyMode = false;
         }, 60000);
+    },
+
+    async sendEmergencySMS(alerts) {
+        const contacts = this.state.emergencyContacts.filter(c => c.phone);
+        if (contacts.length === 0) return;
+
+        try {
+            const response = await fetch('/api/emergency-alert', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contacts: contacts,
+                    userName: App.currentUser?.name || 'MediAssist AI User',
+                    alerts: alerts.map(a => ({
+                        metric: a.metric,
+                        value: a.value,
+                        message: a.message
+                    }))
+                })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                const sent = result.results.filter(r => r.success).length;
+                showToast(`Emergency SMS sent to ${sent} contact(s)`, 'warning');
+                console.log('Emergency SMS results:', result.results);
+            } else {
+                console.error('Emergency SMS failed:', result.error);
+                showToast('Failed to send emergency SMS: ' + (result.error || 'Unknown error'), 'error');
+            }
+        } catch (err) {
+            console.error('Emergency SMS request failed:', err);
+            showToast('Could not reach alert server', 'error');
+        }
     },
 
     showEmergencyOverlay(alerts) {
@@ -492,15 +514,46 @@ const WearableSimulator = {
     addEmergencyContact(name, phone, relation) {
         const contact = { id: generateId(), name, phone, relation, addedDate: new Date().toISOString() };
         this.state.emergencyContacts.push(contact);
-        this.saveWearableData();
+        this.saveEmergencyContactToFirestore(contact);
         showToast(`Emergency contact ${name} added`);
         return contact;
     },
 
     removeEmergencyContact(id) {
         this.state.emergencyContacts = this.state.emergencyContacts.filter(c => c.id !== id);
-        this.saveWearableData();
+        this.removeEmergencyContactFromFirestore(id);
         showToast('Emergency contact removed');
+    },
+
+    async saveEmergencyContactToFirestore(contact) {
+        if (!FB.userId()) return;
+        try {
+            await db.collection('users').doc(FB.userId())
+                .collection('emergencyContacts').doc(contact.id).set(contact);
+        } catch (e) {
+            console.error('Failed to save emergency contact to Firestore:', e);
+        }
+    },
+
+    async removeEmergencyContactFromFirestore(id) {
+        if (!FB.userId()) return;
+        try {
+            await db.collection('users').doc(FB.userId())
+                .collection('emergencyContacts').doc(id).delete();
+        } catch (e) {
+            console.error('Failed to remove emergency contact from Firestore:', e);
+        }
+    },
+
+    async loadEmergencyContactsFromFirestore() {
+        if (!FB.userId()) return;
+        try {
+            const snap = await db.collection('users').doc(FB.userId())
+                .collection('emergencyContacts').get();
+            this.state.emergencyContacts = snap.docs.map(d => d.data());
+        } catch (e) {
+            console.error('Failed to load emergency contacts from Firestore:', e);
+        }
     },
 
     getHealthScore() {
@@ -573,9 +626,9 @@ const WearableSimulator = {
     },
 
     saveWearableData() {
+        // Emergency contacts now stored in Firestore - this is just for local cache
         localStorage.setItem('mediassist_wearable', JSON.stringify({
             totalStepsToday: this.state.totalStepsToday,
-            emergencyContacts: this.state.emergencyContacts,
             lastDate: new Date().toISOString().split('T')[0]
         }));
     },

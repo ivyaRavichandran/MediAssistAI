@@ -48,6 +48,14 @@ const App = {
                 }, 500);
             }, 1500);
         });
+
+        // Periodic auth check - detect lost session
+        setInterval(() => {
+            if (this.currentUser && !FB.userId()) {
+                showToast('Session expired. Please log in again.', 'warning');
+                auth.signOut();
+            }
+        }, 60000);
     },
 
     async saveToFirestore() {
@@ -95,7 +103,15 @@ const App = {
 
     saveData() {
         this.saveToLocalFallback();
-        this.saveToFirestore().catch(e => console.error('Firestore save failed:', e));
+        if (this._saveTimer) clearTimeout(this._saveTimer);
+        this._saveTimer = setTimeout(() => {
+            this.saveToFirestore().catch(e => {
+                console.error('Firestore save failed:', e);
+                if (typeof showToast === 'function') {
+                    showToast('Cloud save failed - data saved locally', 'warning');
+                }
+            });
+        }, 300);
     },
 
     showAuth() {
@@ -185,6 +201,8 @@ const App = {
         } else {
             badge.classList.add('hidden');
         }
+
+        refreshHealthTips();
     },
 
     getTodayReminders() {
@@ -263,7 +281,6 @@ const App = {
             details,
             date: new Date().toISOString()
         });
-        this.saveData();
     },
 
     setupNotifications() {
@@ -404,6 +421,67 @@ function getTimeAgo(date) {
 
 function navigateTo(page) {
     App.navigateTo(page);
+}
+
+// ===== Dynamic Health Tips =====
+const healthTipPool = [
+    { icon: 'fa-check-circle', color: '#4caf50', text: 'Always take medications at the same time daily for best results.' },
+    { icon: 'fa-tint', color: '#2196f3', text: 'Stay hydrated - drink at least 8 glasses of water daily.' },
+    { icon: 'fa-exclamation-circle', color: '#ff9800', text: 'Never skip doses without consulting your doctor first.' },
+    { icon: 'fa-walking', color: '#4caf50', text: 'Walk at least 30 minutes a day to maintain heart health.' },
+    { icon: 'fa-apple-alt', color: '#e91e63', text: 'Eat at least 5 servings of fruits and vegetables daily.' },
+    { icon: 'fa-bed', color: '#673ab7', text: 'Get 7-9 hours of sleep every night for optimal recovery.' },
+    { icon: 'fa-smoking-ban', color: '#f44336', text: 'Smoking increases medication interactions. Talk to your doctor.' },
+    { icon: 'fa-heartbeat', color: '#e91e63', text: 'Monitor your blood pressure regularly if you are on antihypertensives.' },
+    { icon: 'fa-utensils', color: '#ff9800', text: 'Some medications work best on an empty stomach - check with your pharmacist.' },
+    { icon: 'fa-pills', color: '#2196f3', text: 'Complete the full course of antibiotics even if you feel better.' },
+    { icon: 'fa-car', color: '#f44336', text: 'Drowsiness-inducing medications: avoid driving or operating machinery.' },
+    { icon: 'fa-wine-bottle', color: '#ff9800', text: 'Alcohol can interact with many medications. Avoid mixing unless approved.' },
+    { icon: 'fa-sun', color: '#ff9800', text: 'Some medications increase sun sensitivity. Use SPF 30+ sunscreen.' },
+    { icon: 'fa-thermometer-half', color: '#f44336', text: 'Check your temperature if you feel unwell - fever can affect drug absorption.' },
+    { icon: 'fa-notes-medical', color: '#4caf50', text: 'Keep an updated list of all your medications and share with every doctor.' },
+    { icon: 'fa-running', color: '#2196f3', text: 'Regular exercise helps manage diabetes and heart conditions better.' },
+    { icon: 'fa-brain', color: '#9c27b0', text: 'Stress management is as important as medication for chronic conditions.' },
+    { icon: 'fa-weight', color: '#ff9800', text: 'Maintaining a healthy weight reduces the need for higher medication doses.' },
+    { icon: 'fa-hand-holding-medical', color: '#f44336', text: 'Store medications in a cool, dry place away from direct sunlight.' },
+    { icon: 'fa-calendar-check', color: '#4caf50', text: 'Set medication reminders to never miss a dose.' },
+    { icon: 'fa-allergies', color: '#ff9800', text: 'Always inform doctors about all medications you take to avoid interactions.' },
+    { icon: 'fa-bone', color: '#795548', text: 'Long-term PPI use may affect calcium absorption. Consider supplements.' },
+    { icon: 'fa-eye', color: '#2196f3', text: 'Diabetes patients: get annual eye exams to check for retinopathy.' },
+    { icon: 'fa-tooth', color: '#00bcd4', text: 'Some medications cause dry mouth - maintain good oral hygiene.' },
+    { icon: 'fa-shield-alt', color: '#4caf50', text: 'Vaccinations are important even if you are on medication. Consult your doctor.' },
+    { icon: 'fa-procedures', color: '#f44336', text: 'Always inform your surgeon about all medications before any procedure.' },
+    { icon: 'fa-mortar-pestle', color: '#ff9800', text: 'Crush or split tablets only if approved - some are extended-release.' },
+    { icon: 'fa-child', color: '#e91e63', text: 'Keep all medications out of reach of children.' },
+    { icon: 'fa-recycle', color: '#4caf50', text: 'Dispose of expired medications at a pharmacy, not in the trash.' },
+    { icon: 'fa-hospital', color: '#f44336', text: 'Carry your medication list in your wallet in case of emergencies.' },
+    { icon: 'fa-user-md', color: '#2196f3', text: 'Regular follow-ups with your doctor ensure your treatment stays on track.' }
+];
+
+function refreshHealthTips() {
+    const container = document.getElementById('health-tips-container');
+    if (!container) return;
+
+    const shuffled = [...healthTipPool].sort(() => Math.random() - 0.5);
+    const selected = shuffled.slice(0, 3);
+
+    // Add medication-specific tips if user has meds
+    if (App.medications.length > 0) {
+        const medNames = App.medications.map(m => m.name).join(', ');
+        selected.push({
+            icon: 'fa-pills',
+            color: '#0077b6',
+            text: `Your current medications: ${medNames}. Always check for interactions.`
+        });
+        selected.shift();
+    }
+
+    container.innerHTML = selected.map(tip => `
+        <div class="tip-item">
+            <i class="fas ${tip.icon}" style="color: ${tip.color};"></i>
+            <p>${tip.text}</p>
+        </div>
+    `).join('');
 }
 
 // ===== Initialize =====

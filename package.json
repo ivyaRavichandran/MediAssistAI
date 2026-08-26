@@ -2,10 +2,11 @@
   "name": "mediassist-ai",
   "version": "1.0.0",
   "description": "MediAssist AI - Smart Prescription & Medication Assistant",
-  "main": "index.html",
+  "main": "server.js",
   "scripts": {
-    "start": "npx serve . -p 3000",
-    "dev": "npx serve . -p 3000 --cors",
+    "start": "node server.js",
+    "dev": "node server.js",
+    "client": "npx serve . -p 3000 --cors",
     "build": "echo 'Static web app - no build needed'"
   },
   "keywords": [
@@ -18,7 +19,10 @@
   "author": "MediAssist AI Team",
   "license": "MIT",
   "dependencies": {
-    "opencode-ai": "^1.18.23"
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.2",
+    "twilio": "^5.0.0"
   },
   "devDependencies": {
     "serve": "^14.2.0"

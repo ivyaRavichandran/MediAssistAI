@@ -16,6 +16,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
     <!-- Loading Screen -->
@@ -241,19 +242,14 @@
                     <div class="card health-tips">
                         <div class="card-header">
                             <h2><i class="fas fa-lightbulb"></i> Health Tips</h2>
+                            <button class="btn-icon" onclick="refreshHealthTips()" title="New tips">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
                         </div>
-                        <div class="card-body">
+                        <div class="card-body" id="health-tips-container">
                             <div class="tip-item">
                                 <i class="fas fa-check-circle" style="color: #4caf50;"></i>
-                                <p>Always take medications at the same time daily for best results.</p>
-                            </div>
-                            <div class="tip-item">
-                                <i class="fas fa-check-circle" style="color: #2196f3;"></i>
-                                <p>Stay hydrated - drink at least 8 glasses of water daily.</p>
-                            </div>
-                            <div class="tip-item">
-                                <i class="fas fa-check-circle" style="color: #ff9800;"></i>
-                                <p>Never skip doses without consulting your doctor first.</p>
+                                <p>Loading tips...</p>
                             </div>
                         </div>
                     </div>

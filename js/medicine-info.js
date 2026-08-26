@@ -110,11 +110,11 @@ const medicineDB = {
         sideEffects: ['Headache', 'Abdominal pain', 'Nausea', 'Gas/bloating', 'Dizziness', 'Long-term: B12 deficiency, bone fractures'],
         interactions: ['Clopidogrel (reduced activation)', 'Warfarin', 'Methotrexate', 'Iron supplements', 'Calcium supplements'],
         price: { min: 40, max: 250, currency: 'INR', unit: 'strip of 10' },
-        substitutes: ['Pantodac', 'Pan 40', 'Pantop', 'Pentaz', 'Pand'
+        substitutes: ['Pantodac', 'Pan 40', 'Pantop', 'Pentaz', 'Pand']
     }
 };
 
-function searchMedicine() {
+async function searchMedicine() {
     const query = document.getElementById('medicine-search').value.toLowerCase().trim();
 
     if (!query) {
@@ -122,14 +122,11 @@ function searchMedicine() {
         return;
     }
 
-    // Search in database
+    // Try local database first (fast)
     let found = null;
-
-    // Exact match
     if (medicineDB[query]) {
         found = medicineDB[query];
     } else {
-        // Partial match
         for (const [key, value] of Object.entries(medicineDB)) {
             if (key.includes(query) || value.name.toLowerCase().includes(query)) {
                 found = value;
@@ -137,8 +134,6 @@ function searchMedicine() {
             }
         }
     }
-
-    // Search substitutes
     if (!found) {
         for (const [key, value] of Object.entries(medicineDB)) {
             if (value.substitutes?.some(s => s.toLowerCase().includes(query))) {
@@ -150,11 +145,79 @@ function searchMedicine() {
 
     if (found) {
         displayMedicineInfo(found);
-    } else {
-        showToast('Medicine not found. Try a different name.', 'warning');
-        // Show generic result
-        displayGenericResult(query);
+        return;
     }
+
+    // Try OpenFDA API
+    showToast('Searching OpenFDA...', 'info');
+    try {
+        const fdaResult = await searchOpenFDA(query);
+        if (fdaResult) {
+            displayMedicineInfo(fdaResult);
+            return;
+        }
+    } catch (e) {
+        console.log('OpenFDA search failed:', e.message);
+    }
+
+    showToast('Medicine not found in any database', 'warning');
+    displayGenericResult(query);
+}
+
+async function searchOpenFDA(query) {
+    const searches = [
+        `openfda.brand_name:${encodeURIComponent(query)}`,
+        `openfda.generic_name:${encodeURIComponent(query)}`,
+        `openfda.substance_name:${encodeURIComponent(query)}`
+    ];
+
+    for (const search of searches) {
+        try {
+            const resp = await fetch(`https://api.fda.gov/drug/label.json?search=${search}&limit=1`);
+            if (!resp.ok) continue;
+            const data = await resp.json();
+            if (data.results && data.results.length > 0) {
+                return parseOpenFDAResult(data.results[0]);
+            }
+        } catch (e) {
+            continue;
+        }
+    }
+    return null;
+}
+
+function parseOpenFDAResult(result) {
+    const getField = (field) => {
+        const val = result[field];
+        if (Array.isArray(val)) return val.join(', ');
+        return val || 'Not available';
+    };
+
+    const brandName = getField('openfda.brand_name');
+    const genericName = getField('openfda.generic_name');
+    const substanceName = getField('openfda.substance_name');
+    const route = getField('openfda.route');
+    const drugClass = getField('openfda.pharm_class_epc');
+
+    const description = getField('description') || getField('clinical_pharmacology') || 'No description available';
+    const dosageAndAdmin = getField('dosage_and_administration') || 'Consult your doctor for dosage';
+    const warningsText = getField('warnings') || getField('warnings_and_cautions') || 'No warnings listed';
+    const sideEffectsText = getField('adverse_reactions') || 'Consult your doctor for side effects';
+    const contraindications = getField('contraindications') || 'Not listed';
+    const interactions = getField('drug_interactions') || 'Consult your doctor';
+
+    return {
+        name: brandName !== 'Not available' ? `${brandName} (${genericName})` : genericName !== 'Not available' ? genericName : substanceName,
+        type: drugClass !== 'Not available' ? drugClass : (route !== 'Not available' ? `Route: ${route}` : 'Medication'),
+        description: description.substring(0, 500) + (description.length > 500 ? '...' : ''),
+        forms: route !== 'Not available' ? [route] : ['Oral'],
+        dosage: dosageAndAdmin.substring(0, 300) + (dosageAndAdmin.length > 300 ? '...' : ''),
+        sideEffects: sideEffectsText.substring(0, 300).split(/[,;.]/).map(s => s.trim()).filter(s => s.length > 3 && s.length < 100).slice(0, 8),
+        interactions: interactions.substring(0, 300).split(/[,;.]/).map(s => s.trim()).filter(s => s.length > 3 && s.length < 100).slice(0, 5),
+        price: { min: '?', max: '?', currency: 'INR', unit: 'consult pharmacy' },
+        substitutes: [],
+        source: 'OpenFDA'
+    };
 }
 
 function displayMedicineInfo(med) {
@@ -197,6 +260,7 @@ function displayMedicineInfo(med) {
     `;
 
     App.addHistory('medication', 'Medicine Searched', `Searched for ${med.name}`);
+    App.saveData();
 }
 
 function displayGenericResult(query) {
@@ -233,7 +297,7 @@ const pillDatabase = [
     { name: 'Combiflam', color: 'red', shape: 'oval', imprint: 'COMBI', size: 'medium', description: 'Ibuprofen + Paracetamol combination' }
 ];
 
-function identifyPill() {
+async function identifyPill() {
     const color = document.getElementById('pill-color').value.toLowerCase();
     const shape = document.getElementById('pill-shape').value.toLowerCase();
     const imprint = document.getElementById('pill-imprint').value.toLowerCase();
@@ -244,6 +308,7 @@ function identifyPill() {
         return;
     }
 
+    // Local database match
     let matches = pillDatabase.filter(pill => {
         let score = 0;
         if (color && pill.color === color) score++;
@@ -253,7 +318,6 @@ function identifyPill() {
         return score > 0;
     });
 
-    // Sort by match score
     matches.sort((a, b) => {
         let scoreA = 0, scoreB = 0;
         if (color && a.color === color) scoreA++;
@@ -267,7 +331,49 @@ function identifyPill() {
         return scoreB - scoreA;
     });
 
+    // Try OpenFDA NDC search if imprint provided
+    if (imprint && matches.length < 3) {
+        try {
+            const fdaPills = await searchPillByImprint(imprint, color, shape);
+            matches = [...matches, ...fdaPills];
+        } catch (e) {
+            console.log('OpenFDA pill search failed:', e.message);
+        }
+    }
+
     displayPillResults(matches, { color, shape, imprint, size });
+}
+
+async function searchPillByImprint(imprint, color, shape) {
+    const results = [];
+    try {
+        const resp = await fetch(
+            `https://api.fda.gov/drug/label.json?search=openfda.pharm_class_description:${encodeURIComponent(imprint)}&limit=5`
+        );
+        if (!resp.ok) return results;
+        const data = await resp.json();
+
+        if (data.results) {
+            for (const r of data.results) {
+                const brand = r.openfda?.brand_name?.[0] || 'Unknown';
+                const generic = r.openfda?.generic_name?.[0] || '';
+                const route = r.openfda?.route?.[0] || '';
+
+                results.push({
+                    name: brand !== 'Unknown' ? `${brand} (${generic})` : generic || 'Unknown',
+                    color: color || 'unknown',
+                    shape: shape || 'unknown',
+                    imprint: imprint.toUpperCase(),
+                    size: 'unknown',
+                    description: `${route ? route + ' - ' : ''}${r.openfda?.pharm_class_epc?.[0] || 'Medication'}`,
+                    source: 'OpenFDA'
+                });
+            }
+        }
+    } catch (e) {
+        // Silently fail
+    }
+    return results;
 }
 
 function displayPillResults(matches, criteria) {
@@ -313,4 +419,5 @@ function displayPillResults(matches, criteria) {
     }).join('');
 
     App.addHistory('medication', 'Pill Identified', `Identified pill: ${matches[0]?.name || 'Unknown'}`);
+    App.saveData();
 }

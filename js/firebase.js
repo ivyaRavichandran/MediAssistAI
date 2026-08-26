@@ -31,12 +31,17 @@ const FB = {
     async saveUser(profile) {
         const uid = this.userId();
         if (!uid) return;
-        await db.collection('users').doc(uid).set({
+        const userRef = db.collection('users').doc(uid);
+        const existing = await userRef.get();
+        await userRef.set({
             name: profile.name,
             email: profile.email,
             phone: profile.phone || '',
             dob: profile.dob || '',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            createdAt: existing.exists && existing.data().createdAt
+                ? existing.data().createdAt
+                : firebase.firestore.FieldValue.serverTimestamp(),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
     },
 
