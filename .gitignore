@@ -4,3 +4,6 @@ Thumbs.db
 *.log
 .env
 .env.local
+*.mp4
+*.avi
+*.mov
