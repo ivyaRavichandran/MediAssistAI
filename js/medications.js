@@ -21,6 +21,12 @@ function renderMedications() {
         const today = new Date().toISOString().split('T')[0];
         const reminder = App.reminders.find(r => r.medicationId === med.id);
         const taken = reminder?.takenDates?.includes(today);
+        const refill = typeof getRefillStatus === 'function' ? getRefillStatus(med) : null;
+        const stockUnitVal = med.stockUnit || 'tablets';
+
+        const stockLine = refill && refill.tracked
+            ? `<span class="med-stock-pill refill-pill-${refill.level}"><i class="fas fa-boxes-stacked"></i> ${refill.stock} ${escapeHtml(stockUnitVal)}${refill.daysLeft !== null ? ` - ${refill.daysLeft <= 0 ? 'out' : `~${refill.daysLeft}d left`}` : ''}</span>`
+            : '';
 
         return `
             <div class="medication-card">
@@ -32,11 +38,13 @@ function renderMedications() {
                     <span><i class="fas fa-calendar"></i> ${med.duration}</span>
                     ${reminder ? `<span><i class="fas fa-bell"></i> ${formatTime(reminder.time)}</span>` : ''}
                 </div>
+                ${stockLine}
                 ${med.notes ? `<p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;"><i class="fas fa-info-circle"></i> ${med.notes}</p>` : ''}
                 <div class="med-actions">
                     <button class="btn-take" onclick="takeMedication('${med.id}')">
                         <i class="fas ${taken ? 'fa-check' : 'fa-pills'}"></i> ${taken ? 'Taken' : 'Take Now'}
                     </button>
+                    ${refill && refill.tracked ? `<button class="btn-delete" onclick="openRefillModal('${med.id}')"><i class="fas fa-plus"></i> Refill</button>` : ''}
                     <button class="btn-delete" onclick="removeMedication('${med.id}')">
                         <i class="fas fa-trash"></i> Remove
                     </button>
@@ -59,6 +67,8 @@ function addMedication(e) {
     const time = document.getElementById('med-time').value;
     const duration = document.getElementById('med-duration').value;
     const notes = document.getElementById('med-notes').value;
+    const stockRaw = document.getElementById('med-stock')?.value;
+    const stockUnitVal = document.getElementById('med-stock-unit')?.value || 'tablets';
 
     if (!name || !dosage || !frequency || !time) {
         showToast('Please fill in all required fields', 'error');
@@ -75,8 +85,23 @@ function addMedication(e) {
         notes,
         startDate: new Date().toISOString(),
         active: true,
-        warnings: []
+        warnings: [],
+        stockUnit: stockUnitVal,
+        refillHistory: []
     };
+
+    // Stock is optional; only track the medication when a quantity is given
+    const stockQty = parseInt(stockRaw, 10);
+    if (Number.isFinite(stockQty) && stockQty >= 0) {
+        newMed.stock = stockQty;
+        if (stockQty > 0) {
+            newMed.refillHistory.push({
+                date: new Date().toISOString(),
+                quantity: stockQty,
+                unit: stockUnitVal
+            });
+        }
+    }
 
     App.medications.push(newMed);
 
@@ -98,6 +123,7 @@ function addMedication(e) {
     App.saveData();
     App.updateDashboard();
     renderMedications();
+    if (typeof renderRefillPage === 'function') renderRefillPage();
 
     closeModal('add-medication-modal');
     document.getElementById('add-medication-modal').querySelector('form').reset();
@@ -114,14 +140,30 @@ function takeMedication(medId) {
             reminder.takenDates.push(today);
             const med = App.medications.find(m => m.id === medId);
             App.addHistory('medication', 'Dose Taken', `Took ${med?.name || 'medication'}`);
+
+            // Reduce the tracked stock by one dose
+            let lowNow = false;
+            if (med && Number.isFinite(med.stock)) {
+                const unit = med.stockUnit || 'tablets';
+                med.stock = Math.max(0, med.stock - 1);
+                if (unit !== 'doses') {
+                    med.stockUpdatedAt = new Date().toISOString();
+                }
+                if (med.stock === 0) {
+                    lowNow = true;
+                    App.addHistory('refill', 'Out of Stock', `${med.name} is out of ${unit}`);
+                }
+            }
+
             App.saveData();
-            showToast('Dose marked as taken!');
+            showToast('Dose marked as taken!', lowNow ? 'warning' : 'success');
         } else {
             showToast('Already taken today', 'warning');
         }
     }
 
     renderMedications();
+    if (typeof renderRefillPage === 'function') renderRefillPage();
     App.updateDashboard();
 }
 
@@ -136,11 +178,20 @@ function removeMedication(medId) {
     App.saveData();
     App.updateDashboard();
     renderMedications();
+    if (typeof renderRefillPage === 'function') renderRefillPage();
     showToast('Medication removed');
 }
 
 function closeModal(modalId) {
     document.getElementById(modalId).classList.add('hidden');
+}
+
+function openModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    const focusable = modal.querySelector('select, input, button.btn-primary');
+    if (focusable) setTimeout(() => focusable.focus(), 50);
 }
 
 // Close modal on backdrop click

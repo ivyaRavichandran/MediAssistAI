@@ -1,6 +1,25 @@
 // ===== Prescription Upload & OCR Module =====
 
 let currentFile = null;
+let lastOcrEngine = null;   // 'python-tesseract' | 'tesseract.js' | null
+let pythonOcrAvailable = null; // cached availability probe (null = unknown)
+
+// Probe the Python OCR microservice so the UI can show which engine is active
+async function getOcrStatus(force = false) {
+    if (pythonOcrAvailable !== null && !force) return pythonOcrAvailable;
+    try {
+        const resp = await fetch('/api/py-ocr/health');
+        const data = await resp.json();
+        pythonOcrAvailable = {
+            available: !!data.available,
+            method: data.method || 'tesseract.js',
+            version: data.version || null
+        };
+    } catch (e) {
+        pythonOcrAvailable = { available: false, method: 'tesseract.js', version: null };
+    }
+    return pythonOcrAvailable;
+}
 
 function handleFile(file) {
     if (!file.type.match(/image\/(jpeg|jpg|png|gif|webp)|application\/pdf/)) {
@@ -18,29 +37,16 @@ function handleFile(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
         document.getElementById('preview-image').src = e.target.result;
-        document.getElementById('preview-section').classList.remove('hidden');
-        document.querySelector('.upload-area').classList.add('hidden');
-        document.querySelector('.upload-options').classList.add('hidden');
+    document.getElementById('preview-section').classList.remove('hidden');
+    document.querySelector('.upload-area').classList.add('hidden');
     };
     reader.readAsDataURL(file);
-}
-
-function captureImage() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.capture = 'environment';
-    input.onchange = (e) => {
-        if (e.target.files.length > 0) handleFile(e.target.files[0]);
-    };
-    input.click();
 }
 
 function clearUpload() {
     currentFile = null;
     document.getElementById('preview-section').classList.add('hidden');
     document.querySelector('.upload-area').classList.remove('hidden');
-    document.querySelector('.upload-options').classList.remove('hidden');
     document.getElementById('processing-section').classList.add('hidden');
     document.getElementById('results-section').classList.add('hidden');
     document.getElementById('file-input').value = '';
@@ -62,25 +68,24 @@ async function processPrescription() {
     document.getElementById('preview-section').classList.add('hidden');
     document.getElementById('processing-section').classList.remove('hidden');
 
-    // Step 1: OCR with Tesseract.js
-    await simulateProcessing('step-1', 500);
+    // Step 1: OCR - prefer the Python Tesseract service, fall back to Tesseract.js
+    const step1 = document.getElementById('step-1');
+    step1.classList.add('active');
+    step1.querySelector('i').className = 'fas fa-circle-notch fa-spin';
+
     let rawText = '';
-    try {
-        const result = await Tesseract.recognize(currentFile, 'eng', {
-            logger: m => {
-                if (m.status === 'recognizing text') {
-                    const pct = Math.round(m.progress * 100);
-                    const el = document.querySelector('#step-1 span');
-                    if (el) el.textContent = `Extracting text with OCR... ${pct}%`;
-                }
-            }
-        });
-        rawText = result.data.text;
-        document.querySelector('#step-1 span').textContent = `Extracted ${rawText.length} characters`;
-    } catch (err) {
-        console.error('OCR failed:', err);
-        document.querySelector('#step-1 span').textContent = 'OCR failed - using fallback';
-    }
+    const ocrOutcome = await runOcrWithFallback(currentFile, step1);
+    rawText = ocrOutcome.text;
+    lastOcrEngine = ocrOutcome.engine;
+    setOcrEngineBadge(ocrOutcome);
+
+    step1.classList.remove('active');
+    step1.classList.add('completed');
+    step1.querySelector('i').className = 'fas fa-check-circle';
+
+    // Prepare step-2 spinner
+    const step2 = document.getElementById('step-2');
+    if (step2) step2.querySelector('i').className = 'fas fa-circle-notch fa-spin';
 
     // Step 2: AI Analysis
     await simulateProcessing('step-2', 800);
@@ -109,13 +114,144 @@ async function processPrescription() {
         medications: results.medications,
         doctor: results.doctor,
         diagnosis: results.diagnosis,
-        rawText: results.rawText
+        rawText: results.rawText,
+        ocrEngine: lastOcrEngine,
+        ocrConfidence: ocrOutcome.confidence
     };
 
     App.prescriptions.push(prescription);
     App.addHistory('upload', 'Prescription Uploaded', `Uploaded prescription from Dr. ${results.doctor}`);
     App.saveData();
     App.updateDashboard();
+}
+
+// ===== OCR Engine Selection: Python service first, Tesseract.js fallback =====
+
+// Runs the Python OCR service on the uploaded file. Resolves to null when the
+// service is unavailable so the caller can fall back to the browser engine.
+async function ocrWithPythonService(file, stepEl) {
+    const setStepText = (t) => {
+        const span = stepEl ? stepEl.querySelector('span') : null;
+        if (span) span.textContent = t;
+    };
+
+    const status = await getOcrStatus();
+    if (!status.available) return null;
+
+    setStepText('Sending image to Python OCR service...');
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file, file.name || 'prescription.png');
+        formData.append('lang', 'eng');
+
+        const resp = await fetch('/api/py-ocr', { method: 'POST', body: formData });
+        if (!resp.ok) {
+            console.warn('Python OCR service returned', resp.status);
+            return null;
+        }
+
+        const data = await resp.json();
+        if (!data.success || typeof data.text !== 'string') return null;
+
+        return {
+            text: data.text.trim(),
+            confidence: Number(data.confidence) || 0,
+            engine: 'python-tesseract',
+            engineLabel: 'Python OCR (Tesseract ' + (status.version || '') + ')'.replace(/\s+\)/, ')')
+        };
+    } catch (e) {
+        console.warn('Python OCR service unreachable:', e.message);
+        pythonOcrAvailable = { available: false, method: 'tesseract.js', version: null };
+        return null;
+    }
+}
+
+// Runs Tesseract.js in the browser. Used as the automatic fallback.
+async function ocrWithTesseractJs(file, stepEl) {
+    if (typeof Tesseract === 'undefined') {
+        throw new Error('No OCR engine available');
+    }
+
+    const setStepText = (t) => {
+        const span = stepEl ? stepEl.querySelector('span') : null;
+        if (span) span.textContent = t;
+    };
+
+    setStepText('Preparing image for browser OCR...');
+    const preprocessedBlob = await preprocessImage(file);
+
+    const result = await Tesseract.recognize(preprocessedBlob, 'eng', {
+        logger: m => {
+            if (m.status === 'recognizing text') {
+                setStepText(`Browser OCR extracting text... ${Math.round(m.progress * 100)}%`);
+            } else if (m.status === 'loading language traineddata') {
+                setStepText('Loading browser OCR language data...');
+            }
+        }
+    });
+
+    return {
+        text: (result.data.text || '').trim(),
+        confidence: Math.round(result.data.confidence) || 0,
+        engine: 'tesseract.js',
+        engineLabel: 'Browser OCR (Tesseract.js)'
+    };
+}
+
+// Tries the Python service first, then falls back to the in-browser engine.
+async function runOcrWithFallback(file, stepEl) {
+    let outcome = null;
+
+    try {
+        outcome = await ocrWithPythonService(file, stepEl);
+    } catch (e) {
+        console.warn('Python OCR attempt failed:', e.message);
+    }
+
+    if (outcome === null) {
+        try {
+            outcome = await ocrWithTesseractJs(file, stepEl);
+            showToast('Python OCR offline - used browser OCR instead', 'warning');
+        } catch (e) {
+            console.error('All OCR engines failed:', e);
+            if (stepEl) {
+                const span = stepEl.querySelector('span');
+                if (span) span.textContent = 'OCR failed - check the OCR service or your connection';
+            }
+            showToast('OCR failed. Start the Python OCR service or check your connection.', 'error');
+            return { text: '', confidence: 0, engine: null, engineLabel: 'Unavailable' };
+        }
+    }
+
+    const span = stepEl ? stepEl.querySelector('span') : null;
+    if (span) {
+        span.textContent = outcome.text.length > 0
+            ? `Extracted ${outcome.text.length} characters (${outcome.confidence}% confidence)`
+            : 'No text detected - try a clearer image';
+    }
+
+    if (outcome.text.length === 0) {
+        showToast('No text found in the image. Try a clearer photo with better lighting.', 'warning');
+    }
+
+    return outcome;
+}
+
+// Reflects the active OCR engine in the results header.
+function setOcrEngineBadge(outcome) {
+    const badge = document.getElementById('ocr-engine-badge');
+    if (!badge) return;
+
+    if (!outcome.engine) {
+        badge.classList.add('hidden');
+        return;
+    }
+
+    const isPython = outcome.engine === 'python-tesseract';
+    badge.classList.remove('hidden');
+    badge.className = `ocr-engine-badge ${isPython ? 'python' : 'browser'}`;
+    badge.innerHTML = `<i class="fas ${isPython ? 'fa-server' : 'fa-laptop'}"></i> ${outcome.engineLabel} - ${outcome.confidence}% confidence`;
 }
 
 function fileToBase64(file) {
@@ -135,6 +271,74 @@ function fileToBase64(file) {
                 canvas.height = height;
                 canvas.getContext('2d').drawImage(img, 0, 0, width, height);
                 resolve(canvas.toDataURL('image/jpeg', 0.6));
+            };
+            img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+function preprocessImage(file) {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const scale = 2;
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                const ctx = canvas.getContext('2d');
+
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+
+                // Convert to grayscale + increase contrast + adaptive threshold
+                const grayValues = [];
+                for (let i = 0; i < data.length; i += 4) {
+                    grayValues.push(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+                }
+
+                // Calculate local average for adaptive threshold
+                const w = canvas.width;
+                const h = canvas.height;
+                const blockSize = 15;
+
+                for (let y = 0; y < h; y++) {
+                    for (let x = 0; x < w; x++) {
+                        const idx = (y * w + x) * 4;
+                        const gray = grayValues[y * w + x];
+
+                        // Local mean
+                        let sum = 0, count = 0;
+                        for (let dy = -blockSize; dy <= blockSize; dy++) {
+                            for (let dx = -blockSize; dx <= blockSize; dx++) {
+                                const nx = x + dx, ny = y + dy;
+                                if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                                    sum += grayValues[ny * w + nx];
+                                    count++;
+                                }
+                            }
+                        }
+                        const localMean = sum / count;
+                        const threshold = localMean - 10;
+
+                        // High contrast black and white
+                        const val = gray > threshold ? 255 : 0;
+                        data[idx] = data[idx + 1] = data[idx + 2] = val;
+                        data[idx + 3] = 255;
+                    }
+                }
+
+                ctx.putImageData(imageData, 0, 0);
+
+                canvas.toBlob((blob) => {
+                    resolve(blob || file);
+                }, 'image/png');
             };
             img.src = reader.result;
         };
@@ -364,14 +568,26 @@ function displayResults(results) {
     document.getElementById('result-diagnosis').textContent = results.diagnosis;
 
     const medsContainer = document.getElementById('result-medications');
-    medsContainer.innerHTML = results.medications.map(med => `
-        <div class="med-item">
-            <div class="med-item-info">
-                <h4>${med.name} ${med.dosage}</h4>
-                <p>${med.frequency} | ${med.duration} | ${med.instructions}</p>
+    if (results.medications.length > 0) {
+        medsContainer.innerHTML = results.medications.map(med => `
+            <div class="med-item">
+                <div class="med-item-info">
+                    <h4>${med.name} ${med.dosage}</h4>
+                    <p>${med.frequency} | ${med.duration} | ${med.instructions}</p>
+                </div>
             </div>
-        </div>
-    `).join('');
+        `).join('');
+    } else {
+        medsContainer.innerHTML = `
+            <div class="warning-item">
+                <i class="fas fa-exclamation-triangle"></i>
+                <span>No medications detected from OCR text</span>
+            </div>
+            <button class="btn btn-outline" onclick="clearUpload()" style="margin-top: 8px;">
+                <i class="fas fa-redo"></i> Try Again with Clearer Image
+            </button>
+        `;
+    }
 
     const warningsContainer = document.getElementById('result-warnings');
     if (results.warnings.length > 0) {
@@ -386,6 +602,12 @@ function displayResults(results) {
     }
 
     window.currentPrescriptionResults = results;
+
+    // Show raw OCR text
+    const rawTextEl = document.getElementById('raw-text-content');
+    if (rawTextEl) {
+        rawTextEl.textContent = results.rawText || '(no text extracted)';
+    }
 }
 
 function addToMedications() {

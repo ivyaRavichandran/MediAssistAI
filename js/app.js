@@ -156,6 +156,9 @@ const App = {
             case 'medications':
                 renderMedications();
                 break;
+            case 'refills':
+                renderRefillPage();
+                break;
             case 'reminders':
                 renderReminders();
                 break;
@@ -193,6 +196,9 @@ const App = {
 
         this.renderDashboardReminders(todayReminders);
         this.renderDashboardPrescriptions();
+        if (typeof renderDashboardRefillAlerts === 'function') {
+            renderDashboardRefillAlerts();
+        }
 
         const badge = document.getElementById('notification-badge');
         if (todayReminders.length > 0) {
@@ -391,6 +397,7 @@ function renderHistory() {
             let icon = 'fa-file-medical';
             if (item.type === 'medication') { iconClass = 'medication'; icon = 'fa-pills'; }
             if (item.type === 'reminder') { iconClass = 'reminder'; icon = 'fa-bell'; }
+            if (item.type === 'refill') { iconClass = 'medication'; icon = 'fa-boxes-stacked'; }
             if (item.type === 'warning') { iconClass = 'warning'; icon = 'fa-exclamation-triangle'; }
 
             return `

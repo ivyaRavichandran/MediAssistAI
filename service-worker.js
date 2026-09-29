@@ -1,15 +1,19 @@
-const CACHE_NAME = 'mediassist-v1';
+const CACHE_NAME = 'mediassist-v2';
 const ASSETS_TO_CACHE = [
     '/',
     '/index.html',
+    '/manifest.json',
     '/css/styles.css',
     '/js/app.js',
     '/js/auth.js',
+    '/js/firebase.js',
     '/js/prescription.js',
     '/js/medications.js',
+    '/js/refills.js',
     '/js/interactions.js',
     '/js/reminders.js',
     '/js/medicine-info.js',
+    '/js/wearable.js',
     'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
     'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap'
 ];
