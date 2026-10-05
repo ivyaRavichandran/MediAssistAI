@@ -150,6 +150,24 @@ function populateReminderMedicationSelect() {
         App.medications.map(med => `<option value="${med.id}">${med.name} ${med.dosage}</option>`).join('');
 }
 
+// Two reminders for the same medicine at the same time fire two notifications
+// and show twice in the schedule, so treat that as the same reminder.
+function hasIdenticalReminder(candidate) {
+    const sameDays = (a, b) => {
+        const x = [...(a || [])].sort().join(',');
+        const y = [...(b || [])].sort().join(',');
+        return x === y;
+    };
+
+    return App.reminders.some(r =>
+        r.medicationId === candidate.medicationId &&
+        r.time === candidate.time &&
+        r.repeat === candidate.repeat &&
+        sameDays(r.days, candidate.days) &&
+        r.active !== false
+    );
+}
+
 function showAddReminderModal() {
     if (App.medications.length === 0) {
         showToast('Please add a medication first', 'warning');
@@ -163,6 +181,13 @@ function showAddReminderModal() {
 function addReminder(e) {
     e.preventDefault();
 
+    // Guard against a double submit (Enter plus click, or two rapid clicks),
+    // which previously saved the same reminder twice.
+    const form = e.target;
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn && submitBtn.disabled) return;
+    if (submitBtn) submitBtn.disabled = true;
+
     const medicationId = document.getElementById('reminder-medication').value;
     const time = document.getElementById('reminder-time').value;
     const repeat = document.getElementById('reminder-repeat').value;
@@ -173,6 +198,7 @@ function addReminder(e) {
         days = Array.from(document.querySelectorAll('.days-checkbox input:checked')).map(cb => cb.value);
         if (days.length === 0) {
             showToast('Please select at least one day', 'error');
+            if (submitBtn) submitBtn.disabled = false;
             return;
         }
     }
@@ -189,6 +215,12 @@ function addReminder(e) {
         takenDates: []
     };
 
+    if (hasIdenticalReminder(newReminder)) {
+        showToast('A reminder for this medicine at this time already exists', 'warning');
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+    }
+
     App.reminders.push(newReminder);
     App.addHistory('reminder', 'Reminder Set', `Set reminder for ${formatTime(time)}`);
     App.saveData();
@@ -198,6 +230,9 @@ function addReminder(e) {
     closeModal('add-reminder-modal');
     document.getElementById('add-reminder-modal').querySelector('form').reset();
     showToast('Reminder added successfully!');
+
+    // Re-enable for the next reminder the user sets.
+    setTimeout(() => { if (submitBtn) submitBtn.disabled = false; }, 0);
 }
 
 function deleteReminder(reminderId) {

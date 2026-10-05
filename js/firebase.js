@@ -57,20 +57,23 @@ const FB = {
         if (!doc) return;
         const colRef = doc.collection(name);
 
-        const existing = await colRef.get();
-        const existingIds = new Set(existing.docs.map(d => d.id));
         const newIds = new Set(items.map(i => i.id));
 
+        // Write new/changed items first, and only then delete what is absent.
+        // Deleting first was unsafe: four collections are saved in parallel and
+        // a failing one would already have wiped its rows, so the next save
+        // would delete the rest. That is what emptied the History list.
+        const writes = items.map(item =>
+            colRef.doc(item.id).set({ ...item }, { merge: true })
+        );
+        await Promise.all(writes);
+
+        const existing = await colRef.get();
         const deletes = [];
         existing.docs.forEach(d => {
             if (!newIds.has(d.id)) deletes.push(d.ref.delete());
         });
         await Promise.all(deletes);
-
-        const writes = items.map(item => {
-            return colRef.doc(item.id).set({ ...item }, { merge: true });
-        });
-        await Promise.all(writes);
     },
 
     async addItem(collectionName, item) {
@@ -100,7 +103,22 @@ const FB = {
             this.loadCollection('reminders'),
             this.loadCollection('history')
         ]);
-        return { medications, prescriptions, reminders, history };
+
+        // Firestore is the source of truth, but if it comes back empty while
+        // this browser still holds records locally, keep the local copy rather
+        // than showing the user a wiped dashboard.
+        const merge = (cloud, localKey) => {
+            if (cloud.length > 0 || !localKey) return cloud;
+            const local = JSON.parse(localStorage.getItem(localKey) || '[]');
+            return local;
+        };
+
+        return {
+            medications: merge(medications, 'mediassist_medications'),
+            prescriptions: merge(prescriptions, 'mediassist_prescriptions'),
+            reminders: merge(reminders, 'mediassist_reminders'),
+            history: merge(history, 'mediassist_history')
+        };
     },
 
     async saveAll(data) {

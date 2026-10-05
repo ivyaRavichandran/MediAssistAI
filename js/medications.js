@@ -105,7 +105,7 @@ function addMedication(e) {
 
     App.medications.push(newMed);
 
-    // Create reminder
+    // Create reminder, unless this medicine already has one at that time.
     const newReminder = {
         id: generateId(),
         medicationId: newMed.id,
@@ -118,7 +118,11 @@ function addMedication(e) {
         takenDates: []
     };
 
-    App.reminders.push(newReminder);
+    const duplicate = typeof hasIdenticalReminder === 'function'
+        ? hasIdenticalReminder(newReminder)
+        : App.reminders.some(r =>
+            r.medicationId === newMed.id && r.time === time && r.repeat === 'daily');
+    if (!duplicate) App.reminders.push(newReminder);
     App.addHistory('medication', 'Medication Added', `Added ${name} ${dosage}`);
     App.saveData();
     App.updateDashboard();

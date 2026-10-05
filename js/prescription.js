@@ -3,12 +3,24 @@
 let currentFile = null;
 let lastOcrEngine = null;   // 'python-tesseract' | 'tesseract.js' | null
 let pythonOcrAvailable = null; // cached availability probe (null = unknown)
+let ocrStatusCheckedAt = 0;    // timestamp of the last probe
+
+// How long a positive result stays trusted. Failures are re-probed almost
+// immediately so a service that is restarted mid-session recovers instead of
+// being written off as permanently offline.
+const OCR_OK_TTL_MS = 30000;
+const OCR_FAIL_TTL_MS = 5000;
 
 // Probe the Python OCR microservice so the UI can show which engine is active
 async function getOcrStatus(force = false) {
-    if (pythonOcrAvailable !== null && !force) return pythonOcrAvailable;
+    const now = Date.now();
+    if (!force && pythonOcrAvailable !== null) {
+        const ttl = pythonOcrAvailable.available ? OCR_OK_TTL_MS : OCR_FAIL_TTL_MS;
+        if (now - ocrStatusCheckedAt < ttl) return pythonOcrAvailable;
+    }
+
     try {
-        const resp = await fetch('/api/py-ocr/health');
+        const resp = await fetch('/api/py-ocr/health', { cache: 'no-store' });
         const data = await resp.json();
         pythonOcrAvailable = {
             available: !!data.available,
@@ -18,6 +30,7 @@ async function getOcrStatus(force = false) {
     } catch (e) {
         pythonOcrAvailable = { available: false, method: 'tesseract.js', version: null };
     }
+    ocrStatusCheckedAt = Date.now();
     return pythonOcrAvailable;
 }
 
@@ -162,7 +175,10 @@ async function ocrWithPythonService(file, stepEl) {
         };
     } catch (e) {
         console.warn('Python OCR service unreachable:', e.message);
+        // Allow the next upload to retry immediately rather than trusting this
+        // stale failure for the rest of the session.
         pythonOcrAvailable = { available: false, method: 'tesseract.js', version: null };
+        ocrStatusCheckedAt = 0;
         return null;
     }
 }
@@ -210,9 +226,20 @@ async function runOcrWithFallback(file, stepEl) {
     }
 
     if (outcome === null) {
+        // Confirm the service really is down before claiming it is offline,
+        // otherwise a rejected upload (too large, unreadable, bad extension)
+        // gets reported as an outage.
+        const status = await getOcrStatus(true);
+        const reallyOffline = !status.available;
+
         try {
             outcome = await ocrWithTesseractJs(file, stepEl);
-            showToast('Python OCR offline - used browser OCR instead', 'warning');
+            showToast(
+                reallyOffline
+                    ? 'Python OCR offline - used browser OCR instead'
+                    : 'Python OCR rejected the file - used browser OCR instead',
+                'warning'
+            );
         } catch (e) {
             console.error('All OCR engines failed:', e);
             if (stepEl) {
@@ -368,6 +395,70 @@ function simulateProcessing(stepId, duration) {
 
 // ===== Prescription Text Parser =====
 
+// True when two drug names are within a small edit distance, used to absorb
+// OCR character errors ("Azithromicin" -> "azithromycin").
+function isNearMatch(a, b) {
+    // Short tokens are far too easy to match by accident: "pan" (a brand of
+    // pantoprazole) previously absorbed pain, plan, pad, pen, man. Require a
+    // long shared prefix before allowing an edit-distance match.
+    const prefix = 0;
+    for (let i = prefix; i < Math.min(a.length, b.length); i++) {
+        if (a[i] === b[i]) continue;
+        if (i < 3) return false;
+        break;
+    }
+    if (Math.abs(a.length - b.length) > 3) return false;
+
+    let prev = new Array(b.length + 1).fill(0).map((_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        const cur = [i];
+        for (let j = 1; j <= b.length; j++) {
+            cur[j] = Math.min(
+                prev[j] + 1,
+                cur[j - 1] + 1,
+                prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+            );
+        }
+        prev = cur;
+    }
+    const tolerance = b.length <= 6 ? 1 : b.length <= 10 ? 2 : 3;
+    return prev[b.length] <= tolerance;
+}
+
+function normaliseFrequency(raw) {
+    const f = raw.toLowerCase();
+    if (/^(od|bd|tid|qid|daily)$/.test(f)) return f.toUpperCase();
+    if (f.includes('once') || f.includes('od') || f.includes('one time') || f.includes('1 time')) return 'Once Daily';
+    if (f.includes('twice') || f.includes('bd') || f.includes('2 times')) return 'Twice Daily';
+    if (f.includes('three times') || f.includes('thrice') || f.includes('tid') || f.includes('3 times')) return 'Three Times Daily';
+    if (f.includes('four times') || f.includes('qid') || f.includes('4 times')) return 'Four Times Daily';
+    if (f.includes('bedtime') || f.includes('night')) return 'Once Daily at Bedtime';
+    if (f.includes('morning')) return 'Once Daily in the Morning';
+    if (f.includes('evening')) return 'Once Daily in the Evening';
+    if (f.includes('empty stomach')) return 'Take on an Empty Stomach';
+    return raw.replace(/\s+/g, ' ').trim();
+}
+
+// Tokens that mark a line as clinical boilerplate rather than a drug name.
+const NAME_BLOCKLIST = [
+    'advice', 'diagnosis', 'follow', 'review', 'patient', 'weight', 'height',
+    'bmi', 'bp', 'temperature', 'pulse', 'history', 'investigations', 'reports',
+    'prescribed', 'pharmacy', 'hospital', 'clinic', 'centre', 'center', 'doctor',
+    'signature', 'stamp', 'thanks', 'regards', 'note', 'dos', 'dosage',
+    'easy to digest', 'eat ', 'food', 'outside food', 'bed rest', 'boiled',
+    'rice', 'daal', 'liquid', 'water intake',
+];
+
+function deriveInstructions(line) {
+    const l = line.toLowerCase();
+    if (l.includes('empty stomach') || l.includes('before food') || l.includes('before meal')) return 'Take before meals';
+    if (l.includes('after food') || l.includes('after meal')) return 'Take after meals';
+    if (l.includes('with food') || l.includes('with meal')) return 'Take with food';
+    if (l.includes('bedtime') || l.includes('at night')) return 'Take at bedtime';
+    if (l.includes('with water') || l.includes('plenty of water')) return 'Take with plenty of water';
+    return 'As directed by prescriber';
+}
+
 const KNOWN_DRUGS = {
     'paracetamol': { dosage: '500mg', frequency: 'Three Times Daily', duration: '5 days', instructions: 'Take after meals', type: 'Analgesic/Antipyretic' },
     'acetaminophen': { dosage: '500mg', frequency: 'Three Times Daily', duration: '5 days', instructions: 'Take after meals', type: 'Analgesic/Antipyretic' },
@@ -474,19 +565,12 @@ function parsePrescriptionText(rawText) {
                 const dosageMatch = line.match(/(\d+(?:\.\d+)?\s*(?:mg|g|ml|mcg|iu|%|tablet|capsule|syrup|drop)s?)/i);
                 const dosage = dosageMatch ? dosageMatch[1] : info.dosage;
 
-                const freqMatch = line.match(/(?:once|twice|thrice|3\s*times|2\s*times|daily|bedtime|before|after|every\s*\d+\s*hours)/i);
+                const freqMatch = line.match(/(?:one time|once daily|once|1\s*time|two times|twice daily|twice|2\s*times|three times|thrice daily|thrice|3\s*times|four times|4\s*times|four times daily|at bedtime|bedtime|daily|bd|od|tid|qid|before|after|every\s*\d+\s*hours)/i);
                 let frequency = info.frequency;
-                if (freqMatch) {
-                    const f = freqMatch[0].toLowerCase();
-                    if (f.includes('once') || f.includes('daily') || f.includes('od')) frequency = 'Once Daily';
-                    else if (f.includes('twice') || f.includes('2 times') || f.includes('bd')) frequency = 'Twice Daily';
-                    else if (f.includes('thrice') || f.includes('3 times') || f.includes('tid')) frequency = 'Three Times Daily';
-                    else if (f.includes('bedtime') || f.includes('hs')) frequency = 'Once Daily at Bedtime';
-                    else if (f.includes('every')) frequency = freqMatch[0];
-                }
+                if (freqMatch) frequency = normaliseFrequency(freqMatch[0]);
 
                 const durationMatch = line.match(/(?:for\s+)?(\d+)\s*(?:days?|weeks?|months?)/i);
-                const duration = durationMatch ? durationMatch[0] : info.duration;
+const duration = durationMatch ? durationMatch[0].trim() : info.duration;
 
                 let instructions = info.instructions;
                 if (lineLower.includes('before meal') || lineLower.includes('empty stomach') || lineLower.includes('before food')) {
@@ -511,10 +595,12 @@ function parsePrescriptionText(rawText) {
         }
     }
 
+    // Fallback 1: fuzzy dictionary match, so OCR typos ("Azithromicin",
+    // "Cetirisine") still resolve to the real drug.
     if (medications.length === 0 && text.length > 10) {
-        const words = text.split(/\s+/);
-        for (const word of words) {
+        for (const word of text.split(/\s+/)) {
             const clean = word.toLowerCase().replace(/[^a-z]/g, '');
+            if (clean.length < 4) continue;
             if (KNOWN_DRUGS[clean]) {
                 const info = KNOWN_DRUGS[clean];
                 medications.push({
@@ -525,7 +611,141 @@ function parsePrescriptionText(rawText) {
                     instructions: info.instructions,
                     type: info.type
                 });
+                continue;
             }
+            for (const [drugName, info] of Object.entries(KNOWN_DRUGS)) {
+                if (isNearMatch(clean, drugName)) {
+                    medications.push({
+                        name: drugName.charAt(0).toUpperCase() + drugName.slice(1),
+                        dosage: info.dosage,
+                        frequency: info.frequency,
+                        duration: info.duration,
+                        instructions: info.instructions,
+                        type: info.type
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    // Pattern extraction for drugs outside the dictionary.
+    {
+        const doseRe = /(\d+(?:\.\d+)?)\s*(mg|mcg|gm|g|ml|iu|units?|%|tablets?|capsules?)\b/i;
+        const freqRe = /(once|twice|thrice|daily|bd|od|tid|qid|bedtime|night|morning|evening|before|after|meal|food|empty stomach|every\s*\d+\s*(?:hrs?|hours)|x\s*\d+\s*(?:days?|weeks?))/i;
+        // OCR frequently mangles the form prefix: "TAB." reads as "TAS." or
+        // "SAS.", "CAP." as "CAP" / "EAP". Accept the common variants.
+        const formRe = /\b(tab|tas|sas|tabs|tablet|tablets|cap|eap|caps|capsule|capsules|syr|syrup|susp|suspension|drop|drops|inhaler|inj|cream|ointment|gel|sr|er|xd)\b\.?/i;
+
+        // Prescriptions list medicines under serial numbers ("1.", "2)", "3-").
+        // When that structure is present it is the only trustworthy anchor, so
+        // extraction is confined to those lines. Otherwise every line is eligible.
+        const serialRe = /^\s*(\d{1,2})\s*([.)-])\s+(\S.*)$/;
+        const adviceRe = /^(advice|follow\s*up|note[s]?|instruction[s]?|diet|investigations?|reports?|for\s+(?:more|next)\s+days?|review)\b/i;
+
+        // Confine extraction to the medicines block. A "Medicine Name ..."
+        // header marks the start; "Advice"/"Follow Up" marks the end.
+        const headerIdx = lines.findIndex(l => /medicine\s*(name)?\b.*\b(dosage|dose|duration)/i.test(l));
+        let block = lines;
+        if (headerIdx !== -1) {
+            const endIdx = lines.findIndex((l, i) => i > headerIdx && adviceRe.test(l));
+            block = lines.slice(headerIdx + 1, endIdx === -1 ? undefined : endIdx);
+        } else {
+            const endOnly = lines.findIndex(l => adviceRe.test(l));
+            if (endOnly > 0) block = lines.slice(0, endOnly);
+        }
+
+        const numbered = [];
+        for (const l of block) {
+            const m = l.match(serialRe);
+            if (m) numbered.push({ num: parseInt(m[1], 10), rest: m[3].trim() });
+        }
+
+        // OCR often corrupts the first serial ("1)" -> "2)"), so accept any
+        // strictly increasing run rather than demanding 1,2,3,... exactly.
+        let numberedSeq = false;
+        if (numbered.length >= 2) {
+            const strictlyUp = numbered.every((it, i) => i === 0 || it.num > numbered[i - 1].num);
+            numberedSeq = strictlyUp || numbered.length >= 3;
+        }
+        const candidates = numberedSeq ? numbered.map(it => it.rest) : block;
+
+        for (const rawLine of candidates) {
+            const line = rawLine.replace(/^\s*\d{1,2}\s*[.)-]?\s*/, '').trim();
+            if (!line || line.length < 3) continue;
+
+            const doseM = line.match(doseRe);
+            const freqM = line.match(freqRe);
+            const formM = line.match(formRe);
+            if (!doseM && !freqM && !formM) continue;
+
+            // Skip obvious non-drug lines: headings, dates, contact details.
+            if (/^(rx|dr\.?|date|age|sex|weight|diagnosis|advice|note|contact|phone|mobile|address|tel)\b/i.test(line)) continue;
+            if (/\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/.test(line)) continue;
+            if (/\+?\d[\d\s-]{7,}/.test(line)) continue;
+
+            // Inside a numbered block the serial number is itself the anchor, so any
+            // recognisable line counts. Unnumbered text still needs a dose
+            // strength or dosage form, because a bare frequency word is what
+            // previously pulled "advice" lines in as medicines.
+            if (!numberedSeq && !doseM && !formM) continue;
+
+            // Advice and follow-up bullets are also often numbered. They carry no
+            // dose and no dosage form, so they are never medicines.
+            if (adviceRe.test(line)) continue;
+
+            // Inside a numbered list the drug name is the token block right after the
+            // dosage form and before any strength or quantity. The generic
+            // "text before the dose" split would otherwise swallow trailing
+            // instruction words ("... ZOCLAR 500 1 Morning 3 Days" -> "Zoclar").
+            let name;
+            if (numberedSeq && formM) {
+                let tail = line.slice(formM.index + formM[0].length);
+                tail = tail.replace(/^[\s.:,\-]+/, '');
+                // Cut at the first numeric strength or quantity.
+                tail = tail.split(/\s+\d/).shift();
+                name = tail.split(doseRe)[0];
+            } else {
+                name = line.split(doseRe)[0];
+            }
+            name = name.replace(formRe, ' ');
+            name = name.replace(/\b(dr|mr|mrs|ms|and|with|qty|quantity|tab|tas|sas|cap|eap|syrup|susp|each|daily|once|twice|thrice|bd|od|tid|morning|night|fight|days?|weeks?)\b/gi, ' ');
+            name = name.replace(/[^a-zA-Z' -]/g, ' ').replace(/\s+/g, ' ').trim();
+
+            // Drop trailing connective words ("and", "of", "the").
+            name = name.replace(/\s+(and|of|the|for|then|plus|or)\s*$/i, '').trim();
+            if (name.length < 3) name = line.split(doseRe)[0].replace(/[^a-zA-Z ]/g, '').trim();
+            if (name.length < 3 || name.length > 40) continue;
+            if (!/[a-z]/i.test(name)) continue;
+
+            // Drop names that are just the dose/quantity words leaking through, e.g.
+            // "B-Complex Forte Daily" parsed from "1 tab daily".
+            if (/\b(daily|twice|once|thrice|tab|tabs|tablet|capsule|caps|syrup|dose|mg|ml|mcg)$/i.test(name)) {
+                name = name.replace(/\b(daily|twice|once|thrice|four times|three times)\b[\s]*$/i, '').trim();
+            }
+            if (name.length < 3) continue;
+
+            // Skip anything already captured by the dictionary or fuzzy pass.
+            const nameKey = name.toLowerCase();
+            if (medications.some(m => m.name.toLowerCase() === nameKey)) continue;
+            if (medications.some(m => isNearMatch(nameKey, m.name.toLowerCase()))) continue;
+            if (NAME_BLOCKLIST.some(bad => nameKey.includes(bad))) continue;
+
+            // Bare strength with no unit, e.g. "CAP. ZOCLAR 500" or "10/SR".
+                let dosage = doseM ? doseM[0].replace(/\s+/g, '') : 'N/A';
+                if (!doseM) {
+                    const strength = line.match(/\b(\d+(?:\.\d+)?)\s*\/\s*(?:SR|ER|XD|D|DS)\b/i);
+                    if (strength) dosage = strength[0].replace(/\s+/g, '') + ' (as written)';
+                }
+
+                medications.push({
+                name: name.replace(/\b\w/g, c => c.toUpperCase()),
+                dosage: dosage,
+                frequency: freqM ? normaliseFrequency(freqM[0]) : 'As Directed',
+                duration: (line.match(/(?:for\s+)?(\d+)\s*(?:days?|weeks?|months?)/i) || ['Not specified'])[0],
+                instructions: deriveInstructions(line),
+                type: 'Detected from OCR'
+            });
         }
     }
 
@@ -629,7 +849,7 @@ function addToMedications() {
         };
         App.medications.push(newMed);
 
-        App.reminders.push({
+        const rxReminder = {
             id: generateId(),
             medicationId: newMed.id,
             time: '08:00',
@@ -639,7 +859,12 @@ function addToMedications() {
             mealAfter: med.instructions?.toLowerCase().includes('after meal'),
             active: true,
             takenDates: []
-        });
+        };
+        const dupRx = typeof hasIdenticalReminder === 'function'
+            ? hasIdenticalReminder(rxReminder)
+            : App.reminders.some(r =>
+                r.medicationId === newMed.id && r.time === rxReminder.time);
+        if (!dupRx) App.reminders.push(rxReminder);
     });
 
     App.addHistory('medication', 'Medications Added', `Added ${results.medications.length} medications from prescription`);
