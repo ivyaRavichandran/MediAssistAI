@@ -15,6 +15,17 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 
+// ===== Per-user local storage =====
+// Every account gets its own localStorage keys so a new user can never see
+// another user's cached data on the same browser. Returns null when nobody is
+// signed in, and callers must treat null as "no data" rather than falling back
+// to any shared/unscoped keys.
+function userStorageKey(base) {
+    const uid = (typeof FB !== 'undefined' && FB.userId) ? FB.userId() : null;
+    if (!uid) return null;
+    return `mediassist_${base}__${uid}`;
+}
+
 // ===== Firestore Helpers =====
 
 const FB = {
@@ -68,7 +79,22 @@ const FB = {
         );
         await Promise.all(writes);
 
+        // Mirror-deletes are only safe when this browser's copy is known to be
+        // a complete snapshot of the cloud. Otherwise an empty or reset local
+        // array would silently erase everything stored in Firestore.
+        if (!FB._cloudLoaded || !FB._cloudLoaded[name]) return;
+
         const existing = await colRef.get();
+        if (existing.empty) return;
+
+        // Hard stop: never turn a wipe into a deletion. If the local copy is
+        // empty but the cloud has rows, treat it as a failed load, not as a
+        // request to delete everything.
+        if (items.length === 0) {
+            console.warn(`[sync] Skipped delete for "${name}": local copy is empty but cloud has ${existing.size} record(s).`);
+            return;
+        }
+
         const deletes = [];
         existing.docs.forEach(d => {
             if (!newIds.has(d.id)) deletes.push(d.ref.delete());
@@ -105,28 +131,66 @@ const FB = {
         ]);
 
         // Firestore is the source of truth, but if it comes back empty while
-        // this browser still holds records locally, keep the local copy rather
-        // than showing the user a wiped dashboard.
-        const merge = (cloud, localKey) => {
-            if (cloud.length > 0 || !localKey) return cloud;
-            const local = JSON.parse(localStorage.getItem(localKey) || '[]');
-            return local;
+        // this browser still holds records locally for THIS user, keep the
+        // local copy rather than showing a wiped dashboard. Local keys are
+        // namespaced per account (userStorageKey) so one user's cache can never
+        // be served to another user.
+        const merge = (cloud, base) => {
+            if (cloud.length > 0) return cloud;
+            const localKey = userStorageKey(base);
+            if (!localKey) return [];   // nobody signed in -> empty, not other user's data
+            try {
+                return JSON.parse(localStorage.getItem(localKey) || '[]');
+            } catch (e) {
+                return [];
+            }
         };
 
-        return {
-            medications: merge(medications, 'mediassist_medications'),
-            prescriptions: merge(prescriptions, 'mediassist_prescriptions'),
-            reminders: merge(reminders, 'mediassist_reminders'),
-            history: merge(history, 'mediassist_history')
+        const result = {
+            medications: merge(medications, 'medications'),
+            prescriptions: merge(prescriptions, 'prescriptions'),
+            reminders: merge(reminders, 'reminders'),
+            history: merge(history, 'history')
         };
+
+        // Only mark a collection as authoritative when the cloud actually
+        // answered with rows. Without this, an empty/partial load would let the
+        // next save mirror-delete real cloud records.
+        FB._cloudLoaded = {
+            medications: medications.length > 0,
+            prescriptions: prescriptions.length > 0,
+            reminders: reminders.length > 0,
+            history: history.length > 0
+        };
+
+        return result;
     },
 
     async saveAll(data) {
+        // Never push an empty snapshot over a populated cloud account, and only
+        // ever read fallback data from this account's own namespaced keys.
+        const merged = {};
+        for (const key of ['medications', 'prescriptions', 'reminders', 'history']) {
+            const incoming = data[key] || [];
+            if (incoming.length === 0) {
+                const localKey = userStorageKey(key);
+                let cached = [];
+                if (localKey) {
+                    try {
+                        cached = JSON.parse(localStorage.getItem(localKey) || '[]');
+                    } catch (e) { cached = []; }
+                }
+                if (cached.length > 0) merged[key] = cached;
+            } else {
+                merged[key] = incoming;
+            }
+        }
+
         await Promise.all([
-            this.saveCollection('medications', data.medications || []),
-            this.saveCollection('prescriptions', data.prescriptions || []),
-            this.saveCollection('reminders', data.reminders || []),
-            this.saveCollection('history', data.history || [])
+            this.saveCollection('medications', merged.medications || []),
+            this.saveCollection('prescriptions', merged.prescriptions || []),
+            this.saveCollection('reminders', merged.reminders || []),
+            this.saveCollection('history', merged.history || [])
         ]);
     }
 };

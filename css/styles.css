@@ -293,6 +293,20 @@ h1, h2, h3, h4, h5 {
     border-color: var(--primary-200);
 }
 
+.password-hint {
+    margin-top: 5px;
+    font-size: 12px;
+    color: #9aa5b5;
+}
+
+.password-hint.hint-ok {
+    color: #16a34a;
+}
+
+.password-hint.hint-bad {
+    color: #dc2626;
+}
+
 .form-group input:focus,
 .form-group select:focus,
 .form-group textarea:focus {
@@ -1336,6 +1350,18 @@ h1, h2, h3, h4, h5 {
     box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
 }
 
+.medication-card .btn-take:disabled {
+    cursor: not-allowed;
+    opacity: 0.75;
+    transform: none;
+    box-shadow: none;
+}
+
+.medication-card .btn-take.missed {
+    background: rgba(239, 68, 68, 0.12);
+    color: #b91c1c;
+}
+
 .medication-card .btn-delete {
     background: var(--bg-tertiary);
     color: var(--text-secondary);
@@ -1644,6 +1670,68 @@ h1, h2, h3, h4, h5 {
     background: var(--bg-tertiary);
     color: var(--text-muted);
     box-shadow: none;
+}
+
+.btn-take-dose.skipped {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    box-shadow: none;
+}
+
+.btn-take-dose.due {
+    animation: dosePulse 2s ease-in-out infinite;
+}
+
+.btn-take-dose:disabled {
+    cursor: not-allowed;
+    transform: none;
+}
+
+.dose-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.4rem 0.7rem;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+}
+
+.dose-status.upcoming {
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+}
+
+.dose-status.missed {
+    color: #b91c1c;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.dose-status.skipped {
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+}
+
+/* Rows colour-coded by dose state so "not taken" is obvious at a glance. */
+.schedule-item.dose-due {
+    border-left: 3px solid #059669;
+}
+
+.schedule-item.dose-missed {
+    border-left: 3px solid var(--danger);
+    background: rgba(239, 68, 68, 0.05);
+}
+
+.schedule-item.dose-taken,
+.schedule-item.dose-skipped {
+    border-left: 3px solid var(--border);
+}
+
+@keyframes dosePulse {
+    0%, 100% { box-shadow: 0 3px 12px rgba(16, 185, 129, 0.28); }
+    50% { box-shadow: 0 3px 20px rgba(16, 185, 129, 0.55); }
 }
 
 .days-checkbox {
@@ -2150,6 +2238,7 @@ h1, h2, h3, h4, h5 {
 .wl-temp .wl-vital-icon { background: rgba(16, 185, 129, 0.12); color: #059669; }
 .wl-stress .wl-vital-icon { background: #f3e5f5; color: #ab47bc; }
 .wl-resp .wl-vital-icon { background: #e0f7fa; color: #00acc1; }
+.wl-weight .wl-vital-icon { background: rgba(99, 102, 241, 0.12); color: #6366f1; }
 
 .wl-vital-info {
     display: flex;

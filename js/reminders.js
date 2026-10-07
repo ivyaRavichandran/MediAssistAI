@@ -2,19 +2,61 @@
 
 let reminderInterval = null;
 
+// A dose can only be marked inside this window around the scheduled time.
+// Before the window opens the reminder is "upcoming"; after it closes an
+// untaken dose becomes "missed" and can no longer be marked taken.
+const DOSE_WINDOW_BEFORE_MIN = 15;
+const DOSE_WINDOW_AFTER_MIN = 60;
+
+// Local calendar date. toISOString() is UTC, which rolls the date over
+// incorrectly for anyone east or west of Greenwich.
+function todayKey() {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function timeToMinutes(hhmm) {
+    const [h, m] = String(hhmm || '').split(':').map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+}
+
+function nowMinutes() {
+    const d = new Date();
+    return d.getHours() * 60 + d.getMinutes();
+}
+
+// 'upcoming' | 'due' | 'taken' | 'missed'
+function getReminderStatus(reminder) {
+    const today = todayKey();
+    if (reminder.takenDates?.includes(today)) return 'taken';
+    if (reminder.skippedDates?.includes(today)) return 'skipped';
+
+    const due = timeToMinutes(reminder.time);
+    if (due === null) return 'upcoming';
+
+    const now = nowMinutes();
+    if (now < due - DOSE_WINDOW_BEFORE_MIN) return 'upcoming';
+    if (now <= due + DOSE_WINDOW_AFTER_MIN) return 'due';
+    return 'missed';
+}
+
+function isDoseActionAllowed(reminder) {
+    return getReminderStatus(reminder) === 'due';
+}
+
 function setupReminders() {
-    // Check reminders every minute
+    // Check frequently so a notification lands close to the scheduled minute
+    // instead of drifting up to a minute behind.
     if (reminderInterval) clearInterval(reminderInterval);
-    reminderInterval = setInterval(checkReminders, 60000);
+    reminderInterval = setInterval(checkReminders, 20000);
     checkReminders();
 }
 
 function checkReminders() {
-    if (Notification.permission !== 'granted') return;
-
-    const now = new Date();
-    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const today = now.toISOString().split('T')[0];
+    const today = todayKey();
 
     App.reminders.forEach(reminder => {
         if (!reminder.active) return;
@@ -22,13 +64,20 @@ function checkReminders() {
         const med = App.medications.find(m => m.id === reminder.medicationId);
         if (!med) return;
 
-        // Check if already taken today
-        if (reminder.takenDates?.includes(today)) return;
+        // Only fire while the dose window is open, and only once per day.
+        if (!isDoseActionAllowed(reminder)) return;
+        if (!reminder.notifiedDates) reminder.notifiedDates = [];
+        if (reminder.notifiedDates.includes(today)) return;
 
-        // Check if time matches
-        if (reminder.time === currentTime) {
-            sendNotification(med.name, `${med.dosage} - ${reminder.mealBefore ? 'Take before meal' : reminder.mealAfter ? 'Take after meal' : 'Time to take your medication'}`);
-        }
+        reminder.notifiedDates.push(today);
+        App.saveData();
+
+        const meal = reminder.mealBefore ? 'Take before meal'
+            : reminder.mealAfter ? 'Take after meal' : 'Time to take your medication';
+        sendNotification(med.name, `${med.dosage || ''} - ${meal}`.trim());
+
+        if (typeof renderReminders === 'function') renderReminders();
+        if (typeof App.updateDashboard === 'function') App.updateDashboard();
     });
 }
 
@@ -38,6 +87,8 @@ function sendNotification(title, body) {
             body: body,
             icon: 'assets/images/icon.png',
             badge: 'assets/images/badge.png',
+            tag: `mediassist-dose-${title}-${body}`,
+            requireInteraction: true,
             vibrate: [200, 100, 200]
         });
 
@@ -89,28 +140,39 @@ function renderTodaySchedule() {
     }
 
     const sortedReminders = todayReminders.sort((a, b) => a.time.localeCompare(b.time));
-    const now = new Date();
-    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const today = now.toISOString().split('T')[0];
 
     container.innerHTML = sortedReminders.map(r => {
         const med = App.medications.find(m => m.id === r.medicationId);
-        const taken = r.takenDates?.includes(today);
-        const isPast = r.time < currentTime;
+        const status = getReminderStatus(r);
+        const cls = { taken: 'taken', missed: 'missed', due: 'due', upcoming: 'upcoming', skipped: 'skipped' }[status];
+
+        let action;
+        if (status === 'taken') {
+            action = `<button class="btn-take-dose taken" disabled><i class="fas fa-check"></i> Taken</button>`;
+        } else if (status === 'skipped') {
+            action = `<button class="btn-take-dose skipped" disabled><i class="fas fa-minus"></i> Skipped</button>`;
+        } else if (status === 'missed') {
+            action = `<span class="dose-status missed"><i class="fas fa-exclamation-circle"></i> Not taken</span>
+                       <button class="btn-icon" onclick="skipDose('${r.id}')" title="Mark as skipped">
+                           <i class="fas fa-forward"></i>
+                       </button>`;
+        } else if (status === 'due') {
+            action = `<button class="btn-take-dose due" onclick="markDoseTaken('${r.id}', '${med?.name || ''}')">
+                          <i class="fas fa-pills"></i> Take now
+                      </button>`;
+        } else {
+            action = `<span class="dose-status upcoming">Due at ${formatTime(r.time)}</span>`;
+        }
 
         return `
-            <div class="schedule-item" style="${taken ? 'opacity: 0.6;' : ''} ${isPast && !taken ? 'border-left: 3px solid var(--danger);' : ''}">
+            <div class="schedule-item dose-${cls}" style="${status === 'taken' || status === 'skipped' ? 'opacity: 0.6;' : ''}">
                 <div class="schedule-time">${formatTime(r.time)}</div>
                 <div class="schedule-info">
-                    <h4>${med?.name || 'Unknown Medication'}</h4>
-                    <p>${med?.dosage || ''} | ${med?.frequency || ''} ${r.mealBefore ? '| Before meal' : r.mealAfter ? '| After meal' : ''}</p>
+                    <h4>${escapeHtml(med?.name || 'Unknown Medication')}</h4>
+                    <p>${escapeHtml(med?.dosage || '')}${med?.frequency ? ' | ' + escapeHtml(med.frequency) : ''} ${r.mealBefore ? '| Before meal' : r.mealAfter ? '| After meal' : ''}</p>
                 </div>
                 <div class="schedule-actions">
-                    <button class="btn-take-dose ${taken ? 'taken' : ''}" 
-                        onclick="markDoseTaken('${r.id}', '${med?.name || ''}')" 
-                        ${taken ? 'disabled' : ''}>
-                        ${taken ? '<i class="fas fa-check"></i> Taken' : '<i class="fas fa-pills"></i> Take'}
-                    </button>
+                    ${action}
                 </div>
             </div>
         `;
@@ -226,6 +288,7 @@ function addReminder(e) {
     App.saveData();
     App.updateDashboard();
     renderReminders();
+    if (typeof syncPushSchedule === 'function') syncPushSchedule();
 
     closeModal('add-reminder-modal');
     document.getElementById('add-reminder-modal').querySelector('form').reset();
@@ -242,25 +305,63 @@ function deleteReminder(reminderId) {
     App.saveData();
     App.updateDashboard();
     renderReminders();
+    if (typeof syncPushSchedule === 'function') syncPushSchedule();
     showToast('Reminder deleted');
 }
 
 function markDoseTaken(reminderId, medName) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayKey();
     const reminder = App.reminders.find(r => r.id === reminderId);
 
-    if (reminder) {
-        if (!reminder.takenDates) reminder.takenDates = [];
-        if (!reminder.takenDates.includes(today)) {
-            reminder.takenDates.push(today);
-            App.addHistory('medication', 'Dose Taken', `Took ${medName}`);
-            App.saveData();
-            showToast(`${medName} marked as taken!`);
-        } else {
-            showToast('Already taken today', 'warning');
-        }
+    if (!reminder) {
+        showToast('Reminder not found', 'error');
+        return;
     }
 
+    const status = getReminderStatus(reminder);
+    if (status === 'taken') {
+        showToast('Already marked as taken today', 'warning');
+        return;
+    }
+    if (status === 'missed') {
+        showToast(`Too late to mark ${medName} as taken - the dose window has closed`, 'error');
+        renderReminders();
+        return;
+    }
+    if (status === 'upcoming') {
+        showToast(`Too early - ${medName} is due at ${formatTime(reminder.time)}`, 'warning');
+        return;
+    }
+
+    if (!reminder.takenDates) reminder.takenDates = [];
+    reminder.takenDates.push(today);
+
+    // Reduce tracked stock only when the dose is genuinely logged.
+    const med = App.medications.find(m => m.id === reminder.medicationId);
+    if (med && typeof reduceStockForDose === 'function') {
+        reduceStockForDose(med.id);
+    }
+
+    App.addHistory('medication', 'Dose Taken', `Took ${medName}`);
+    App.saveData();
+    App.updateDashboard();
+    renderReminders();
+    if (typeof renderMedications === 'function') renderMedications();
+    showToast(`${medName} marked as taken`);
+}
+
+function skipDose(reminderId) {
+    const today = todayKey();
+    const reminder = App.reminders.find(r => r.id === reminderId);
+    if (!reminder) return;
+
+    const med = App.medications.find(m => m.id === reminder.medicationId);
+    if (!reminder.skippedDates) reminder.skippedDates = [];
+    reminder.skippedDates.push(today);
+
+    App.addHistory('reminder', 'Dose Skipped', `Skipped ${med?.name || 'dose'} due ${formatTime(reminder.time)}`);
+    App.saveData();
     renderReminders();
     App.updateDashboard();
+    showToast(`${med?.name || 'Dose'} marked as skipped`, 'warning');
 }

@@ -14,6 +14,14 @@ const App = {
 
         auth.onAuthStateChanged(async (user) => {
             if (user) {
+                // Always start from an empty slate; any stale in-memory data
+                // from a previous account must not bleed into this session.
+                if (this._saveTimer) clearTimeout(this._saveTimer);
+                this.medications = [];
+                this.prescriptions = [];
+                this.reminders = [];
+                this.history = [];
+
                 this.currentUser = {
                     uid: user.uid,
                     name: user.displayName || user.email.split('@')[0],
@@ -32,6 +40,11 @@ const App = {
 
                 await this.loadFromFirestore();
                 this.showApp();
+
+                // Register this browser for medication push notifications.
+                if (typeof initPushNotifications === 'function') {
+                    setTimeout(() => initPushNotifications(), 800);
+                }
             } else {
                 this.currentUser = null;
                 this.medications = [];
@@ -88,23 +101,46 @@ const App = {
     },
 
     saveToLocalFallback() {
-        localStorage.setItem('mediassist_medications', JSON.stringify(this.medications));
-        localStorage.setItem('mediassist_prescriptions', JSON.stringify(this.prescriptions));
-        localStorage.setItem('mediassist_reminders', JSON.stringify(this.reminders));
-        localStorage.setItem('mediassist_history', JSON.stringify(this.history));
+        const collections = {
+            medications: this.medications,
+            prescriptions: this.prescriptions,
+            reminders: this.reminders,
+            history: this.history
+        };
+        for (const [base, value] of Object.entries(collections)) {
+            const key = (typeof userStorageKey === 'function') ? userStorageKey(base) : null;
+            if (key) localStorage.setItem(key, JSON.stringify(value));
+        }
+    },
+
+    readLocalFallback(base) {
+        const key = (typeof userStorageKey === 'function') ? userStorageKey(base) : null;
+        if (!key) return [];   // never read another account's or shared data
+        try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : [];
+        } catch (e) {
+            return [];
+        }
     },
 
     loadFromLocalFallback() {
-        this.medications = JSON.parse(localStorage.getItem('mediassist_medications') || '[]');
-        this.prescriptions = JSON.parse(localStorage.getItem('mediassist_prescriptions') || '[]');
-        this.reminders = JSON.parse(localStorage.getItem('mediassist_reminders') || '[]');
-        this.history = JSON.parse(localStorage.getItem('mediassist_history') || '[]');
+        this.medications = this.readLocalFallback('medications');
+        this.prescriptions = this.readLocalFallback('prescriptions');
+        this.reminders = this.readLocalFallback('reminders');
+        this.history = this.readLocalFallback('history');
     },
 
     saveData() {
         this.saveToLocalFallback();
+        const uid = (typeof FB !== 'undefined' && FB.userId) ? FB.userId() : null;
+        if (!uid) return;
         if (this._saveTimer) clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => {
+            // Guard against a login switch in the 300ms debounce window so one
+            // user's in-memory data can never be written into another user's
+            // Firestore document.
+            if ((typeof FB === 'undefined') || !FB.userId() || FB.userId() !== uid) return;
             this.saveToFirestore().catch(e => {
                 console.error('Firestore save failed:', e);
                 if (typeof showToast === 'function') {
@@ -126,11 +162,33 @@ const App = {
         this.updateGreeting();
         setupReminders();
 
-        const saved = JSON.parse(localStorage.getItem('mediassist_wearable') || '{}');
+        const key = (typeof userStorageKey === 'function') ? userStorageKey('wearable') : null;
+        const saved = key ? JSON.parse(localStorage.getItem(key) || '{}') : {};
         if (typeof WearableSimulator !== 'undefined' && !WearableSimulator.isRunning) {
             WearableSimulator.init(saved.profile || 'normal');
             WearableSimulator.start();
         }
+
+        // Google Drive OAuth returns here via ?drive=connected|error.
+        this.handleDriveRedirect();
+    },
+
+    handleDriveRedirect() {
+        const params = new URLSearchParams(window.location.search);
+        const drive = params.get('drive');
+        if (!drive && !params.has('drive')) return;
+
+        if (drive === 'connected') {
+            showToast('Google Drive connected', 'success');
+        } else if (drive === 'error') {
+            showToast('Google Drive connection failed', 'error');
+        }
+        this.navigateTo('wearable');
+
+        // Remove the flag so a refresh doesn't re-trigger the toast.
+        const url = new URL(window.location.href);
+        url.searchParams.delete('drive');
+        history.replaceState(null, '', url.pathname + url.search);
     },
 
     navigateTo(page) {
@@ -170,6 +228,7 @@ const App = {
                 break;
             case 'wearable':
                 if (typeof initWearablePage === 'function') initWearablePage();
+                if (typeof initDrivePanel === 'function') initDrivePanel();
                 break;
         }
     },
@@ -239,18 +298,33 @@ const App = {
             .slice(0, 5)
             .map(r => {
                 const med = this.medications.find(m => m.id === r.medicationId);
-                const taken = r.takenDates?.includes(new Date().toISOString().split('T')[0]);
+                const status = typeof getReminderStatus === 'function'
+                    ? getReminderStatus(r)
+                    : (r.takenDates?.includes(todayKey()) ? 'taken' : 'due');
+
+                let action;
+                if (status === 'taken') {
+                    action = `<button class="btn-take-dose taken" disabled><i class="fas fa-check"></i> Taken</button>`;
+                } else if (status === 'missed') {
+                    action = `<span class="dose-status missed"><i class="fas fa-exclamation-circle"></i> Not taken</span>`;
+                } else if (status === 'skipped') {
+                    action = `<span class="dose-status skipped"><i class="fas fa-minus"></i> Skipped</span>`;
+                } else if (status === 'due') {
+                    action = `<button class="btn-take-dose due" onclick="markDoseTaken('${r.id}', '${escapeHtml(med?.name || '')}')">
+                                  <i class="fas fa-pills"></i> Take now
+                              </button>`;
+                } else {
+                    action = `<span class="dose-status upcoming">Due ${formatTime(r.time)}</span>`;
+                }
+
                 return `
-                    <div class="schedule-item">
+                    <div class="schedule-item dose-${status}" style="${status === 'taken' || status === 'skipped' ? 'opacity: 0.6;' : ''}">
                         <div class="schedule-time">${formatTime(r.time)}</div>
                         <div class="schedule-info">
-                            <h4>${med?.name || 'Unknown'}</h4>
-                            <p>${med?.dosage || ''} ${r.mealBefore ? '- Before meal' : r.mealAfter ? '- After meal' : ''}</p>
+                            <h4>${escapeHtml(med?.name || 'Unknown')}</h4>
+                            <p>${escapeHtml(med?.dosage || '')} ${r.mealBefore ? '- Before meal' : r.mealAfter ? '- After meal' : ''}</p>
                         </div>
-                        <button class="btn-take-dose ${taken ? 'taken' : ''}"
-                            onclick="markDoseTaken('${r.id}', '${med?.name || ''}')">
-                            ${taken ? 'Taken' : 'Take'}
-                        </button>
+                        <div class="schedule-actions">${action}</div>
                     </div>
                 `;
             }).join('');

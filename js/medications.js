@@ -21,6 +21,26 @@ function renderMedications() {
         const today = new Date().toISOString().split('T')[0];
         const reminder = App.reminders.find(r => r.medicationId === med.id);
         const taken = reminder?.takenDates?.includes(today);
+
+        // The button mirrors the reminder state so the Medications page cannot
+        // offer a dose that the schedule would refuse.
+        const status = (reminder && typeof getReminderStatus === 'function')
+            ? getReminderStatus(reminder)
+            : (taken ? 'taken' : 'due');
+
+        const takeAction = status === 'taken'
+            ? `<button class="btn-take" disabled><i class="fas fa-check"></i> Taken</button>`
+            : status === 'missed'
+                ? `<button class="btn-take missed" disabled><i class="fas fa-exclamation-circle"></i> Not taken</button>`
+                : status === 'skipped'
+                    ? `<button class="btn-take" disabled><i class="fas fa-minus"></i> Skipped</button>`
+                    : status === 'upcoming'
+                        ? `<button class="btn-take" disabled title="Dose window not open yet">
+                               <i class="fas fa-clock"></i> Due ${formatTime(reminder.time)}
+                           </button>`
+                        : `<button class="btn-take" onclick="takeMedication('${med.id}')">
+                               <i class="fas fa-pills"></i> Take Now
+                           </button>`;
         const refill = typeof getRefillStatus === 'function' ? getRefillStatus(med) : null;
         const stockUnitVal = med.stockUnit || 'tablets';
 
@@ -41,9 +61,7 @@ function renderMedications() {
                 ${stockLine}
                 ${med.notes ? `<p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;"><i class="fas fa-info-circle"></i> ${med.notes}</p>` : ''}
                 <div class="med-actions">
-                    <button class="btn-take" onclick="takeMedication('${med.id}')">
-                        <i class="fas ${taken ? 'fa-check' : 'fa-pills'}"></i> ${taken ? 'Taken' : 'Take Now'}
-                    </button>
+                    ${takeAction}
                     ${refill && refill.tracked ? `<button class="btn-delete" onclick="openRefillModal('${med.id}')"><i class="fas fa-plus"></i> Refill</button>` : ''}
                     <button class="btn-delete" onclick="removeMedication('${med.id}')">
                         <i class="fas fa-trash"></i> Remove
@@ -134,41 +152,66 @@ function addMedication(e) {
     showToast(`${name} added successfully!`);
 }
 
+// Reduce tracked stock by one dose and record a refill alert when it runs out.
+function reduceStockForDose(medId) {
+    const med = App.medications.find(m => m.id === medId);
+    let lowNow = false;
+    if (!med || !Number.isFinite(med.stock)) return false;
+
+    const unit = med.stockUnit || 'tablets';
+    med.stock = Math.max(0, med.stock - 1);
+    if (unit !== 'doses') {
+        med.stockUpdatedAt = new Date().toISOString();
+    }
+    if (med.stock === 0) {
+        lowNow = true;
+        App.addHistory('refill', 'Out of Stock', `${med.name} is out of ${unit}`);
+    }
+    return lowNow;
+}
+
+// Marking a dose from the Medications page must obey the same dose window as
+// the reminders page, otherwise it silently bypasses the rule.
 function takeMedication(medId) {
-    const today = new Date().toISOString().split('T')[0];
-    const reminder = App.reminders.find(r => r.medicationId === medId);
+    const today = typeof todayKey === 'function' ? todayKey() : new Date().toISOString().split('T')[0];
+    const med = App.medications.find(m => m.id === medId);
+    const reminder = App.reminders.find(r =>
+        r.medicationId === medId && r.active !== false && !(r.takenDates || []).includes(today));
 
-    if (reminder) {
-        if (!reminder.takenDates) reminder.takenDates = [];
-        if (!reminder.takenDates.includes(today)) {
-            reminder.takenDates.push(today);
-            const med = App.medications.find(m => m.id === medId);
-            App.addHistory('medication', 'Dose Taken', `Took ${med?.name || 'medication'}`);
+    if (!med) return;
 
-            // Reduce the tracked stock by one dose
-            let lowNow = false;
-            if (med && Number.isFinite(med.stock)) {
-                const unit = med.stockUnit || 'tablets';
-                med.stock = Math.max(0, med.stock - 1);
-                if (unit !== 'doses') {
-                    med.stockUpdatedAt = new Date().toISOString();
-                }
-                if (med.stock === 0) {
-                    lowNow = true;
-                    App.addHistory('refill', 'Out of Stock', `${med.name} is out of ${unit}`);
-                }
-            }
-
-            App.saveData();
-            showToast('Dose marked as taken!', lowNow ? 'warning' : 'success');
-        } else {
+    if (reminder && typeof getReminderStatus === 'function') {
+        const status = getReminderStatus(reminder);
+        if (status === 'taken') {
             showToast('Already taken today', 'warning');
+            return;
+        }
+        if (status === 'missed') {
+            showToast(`Too late to mark ${med.name} as taken - the dose window has closed`, 'error');
+            renderMedications();
+            return;
+        }
+        if (status === 'upcoming') {
+            showToast(`Too early - ${med.name} is due at ${formatTime(reminder.time)}`, 'warning');
+            return;
         }
     }
 
+    if (reminder) {
+        if (!reminder.takenDates) reminder.takenDates = [];
+        reminder.takenDates.push(today);
+        App.addHistory('medication', 'Dose Taken', `Took ${med.name}`);
+    } else {
+        App.addHistory('medication', 'Dose Taken', `Took ${med.name}`);
+    }
+
+    const lowNow = reduceStockForDose(medId);
+    App.saveData();
     renderMedications();
     if (typeof renderRefillPage === 'function') renderRefillPage();
+    if (typeof renderReminders === 'function') renderReminders();
     App.updateDashboard();
+    showToast('Dose marked as taken!', lowNow ? 'warning' : 'success');
 }
 
 function removeMedication(medId) {

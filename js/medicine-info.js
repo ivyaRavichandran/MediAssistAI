@@ -187,37 +187,90 @@ async function searchOpenFDA(query) {
 }
 
 function parseOpenFDAResult(result) {
-    const getField = (field) => {
-        const val = result[field];
-        if (Array.isArray(val)) return val.join(', ');
-        return val || 'Not available';
+    // Resolve a possibly dotted path (e.g. "openfda.brand_name") against the
+    // nested result object, exactly as the real OpenFDA payload is shaped.
+    const readPath = (obj, path) => {
+        let node = obj;
+        for (const part of path.split('.')) {
+            if (node && typeof node === 'object' && part in node) node = node[part];
+            else return undefined;
+        }
+        return node;
     };
 
-    const brandName = getField('openfda.brand_name');
-    const genericName = getField('openfda.generic_name');
-    const substanceName = getField('openfda.substance_name');
-    const route = getField('openfda.route');
-    const drugClass = getField('openfda.pharm_class_epc');
+    // Pull the first field that actually has content; returns null when the API
+    // provided nothing, so the UI can hide that section instead of inventing
+    // "Not available" placeholders.
+    const pick = (fields) => {
+        for (const f of fields) {
+            const v = readPath(result, f);
+            if (v === undefined || v === null) continue;
+            if (Array.isArray(v)) {
+                if (v.length === 0) continue;
+                const joined = v.map(x => String(x || '').trim()).filter(Boolean).join(', ');
+                if (joined) return joined;
+                continue;
+            }
+            const s = String(v).trim();
+            if (s) return s;
+        }
+        return null;
+    };
 
-    const description = getField('description') || getField('clinical_pharmacology') || 'No description available';
-    const dosageAndAdmin = getField('dosage_and_administration') || 'Consult your doctor for dosage';
-    const warningsText = getField('warnings') || getField('warnings_and_cautions') || 'No warnings listed';
-    const sideEffectsText = getField('adverse_reactions') || 'Consult your doctor for side effects';
-    const contraindications = getField('contraindications') || 'Not listed';
-    const interactions = getField('drug_interactions') || 'Consult your doctor';
+    const clean = (s, max) => {
+        if (!s) return null;
+        const text = String(s).replace(/\s+/g, ' ').trim();
+        if (!text) return null;
+        return text.length > max ? text.substring(0, max) + '...' : text;
+    };
+
+    const toList = (s, maxItems) => {
+        if (!s) return [];
+        return String(s).split(/[;.](?:\s|$)/).map(x => x.trim()).filter(x => x.length > 3 && x.length < 160).slice(0, maxItems);
+    };
+
+    const brandName = pick(['openfda.brand_name']);
+    const genericName = pick(['openfda.generic_name']);
+    const substanceName = pick(['openfda.substance_name']);
+    const route = pick(['openfda.route']);
+    const drugClass = pick(['openfda.pharm_class_epc']);
 
     return {
-        name: brandName !== 'Not available' ? `${brandName} (${genericName})` : genericName !== 'Not available' ? genericName : substanceName,
-        type: drugClass !== 'Not available' ? drugClass : (route !== 'Not available' ? `Route: ${route}` : 'Medication'),
-        description: description.substring(0, 500) + (description.length > 500 ? '...' : ''),
-        forms: route !== 'Not available' ? [route] : ['Oral'],
-        dosage: dosageAndAdmin.substring(0, 300) + (dosageAndAdmin.length > 300 ? '...' : ''),
-        sideEffects: sideEffectsText.substring(0, 300).split(/[,;.]/).map(s => s.trim()).filter(s => s.length > 3 && s.length < 100).slice(0, 8),
-        interactions: interactions.substring(0, 300).split(/[,;.]/).map(s => s.trim()).filter(s => s.length > 3 && s.length < 100).slice(0, 5),
-        price: { min: '?', max: '?', currency: 'INR', unit: 'consult pharmacy' },
+        name: brandName
+            ? (genericName && genericName !== brandName ? `${brandName} (${genericName})` : brandName)
+            : (genericName || substanceName || 'Unknown medicine'),
+        type: drugClass || (route ? `Route: ${route}` : null),
+        description: clean(pick(['description', 'clinical_pharmacology']), 500),
+        forms: route ? [route] : [],
+        dosage: clean(pick(['dosage_and_administration']), 300),
+        sideEffects: toList(pick(['adverse_reactions']), 8),
+        interactions: toList(pick(['drug_interactions']), 5),
+        price: null,
         substitutes: [],
         source: 'OpenFDA'
     };
+}
+
+// Show/hide a whole detail section (title + content) based on whether data
+// exists. Missing or empty info hides the entire section instead of rendering
+// "Information not available".
+function setDetailContent(id, render) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const section = el.closest('.detail-section');
+    const value = (typeof render === 'function') ? render() : render;
+    const empty = value === null || value === undefined ||
+        (typeof value === 'string' && !value.trim()) ||
+        (Array.isArray(value) && value.length === 0);
+
+    if (empty) {
+        if (section) section.classList.add('hidden');
+        el.textContent = '';
+        el.innerHTML = '';
+    } else {
+        if (section) section.classList.remove('hidden');
+        el.innerHTML = value;
+    }
 }
 
 function displayMedicineInfo(med) {
@@ -225,39 +278,33 @@ function displayMedicineInfo(med) {
     container.classList.remove('hidden');
 
     document.getElementById('medicine-name').textContent = med.name;
-    document.getElementById('medicine-type').textContent = med.type;
-    document.getElementById('medicine-description').textContent = med.description;
 
-    document.getElementById('medicine-forms').innerHTML = `
-        <div class="tag-list">
-            ${med.forms.map(f => `<span class="tag">${f}</span>`).join('')}
-        </div>
-    `;
+    const typeEl = document.getElementById('medicine-type');
+    if (med.type) {
+        typeEl.textContent = med.type;
+        typeEl.classList.remove('hidden');
+    } else {
+        typeEl.classList.add('hidden');
+    }
 
-    document.getElementById('medicine-dosage').textContent = med.dosage;
-
-    document.getElementById('medicine-side-effects').innerHTML = `
-        <div class="tag-list">
-            ${med.sideEffects.map(s => `<span class="tag" style="background: #fff5f5; color: var(--danger);">${s}</span>`).join('')}
-        </div>
-    `;
-
-    document.getElementById('medicine-interactions').innerHTML = `
-        <div class="tag-list">
-            ${med.interactions.map(i => `<span class="tag" style="background: #fffbeb; color: var(--warning);">${i}</span>`).join('')}
-        </div>
-    `;
-
-    document.getElementById('medicine-price').innerHTML = `
-        <strong>₹${med.price.min} - ₹${med.price.max}</strong> per ${med.price.unit}
-        <br><small style="color: var(--text-muted);">*Approximate prices, may vary by location and pharmacy</small>
-    `;
-
-    document.getElementById('medicine-substitutes').innerHTML = `
-        <div class="tag-list">
-            ${med.substitutes.map(s => `<span class="tag" style="background: #e8f5e9; color: var(--success);">${s}</span>`).join('')}
-        </div>
-    `;
+    setDetailContent('medicine-description', med.description);
+    setDetailContent('medicine-forms', med.forms && med.forms.length
+        ? `<div class="tag-list">${med.forms.map(f => `<span class="tag">${f}</span>`).join('')}</div>`
+        : null);
+    setDetailContent('medicine-dosage', med.dosage);
+    setDetailContent('medicine-side-effects', med.sideEffects && med.sideEffects.length
+        ? `<div class="tag-list">${med.sideEffects.map(s => `<span class="tag" style="background: #fff5f5; color: var(--danger);">${s}</span>`).join('')}</div>`
+        : null);
+    setDetailContent('medicine-interactions', med.interactions && med.interactions.length
+        ? `<div class="tag-list">${med.interactions.map(i => `<span class="tag" style="background: #fffbeb; color: var(--warning);">${i}</span>`).join('')}</div>`
+        : null);
+    setDetailContent('medicine-price', med.price && med.price.min !== undefined
+        ? `<strong>₹${med.price.min} - ₹${med.price.max}</strong> per ${med.price.unit}
+            <br><small style="color: var(--text-muted);">*Approximate prices, may vary by location and pharmacy</small>`
+        : null);
+    setDetailContent('medicine-substitutes', med.substitutes && med.substitutes.length
+        ? `<div class="tag-list">${med.substitutes.map(s => `<span class="tag" style="background: #e8f5e9; color: var(--success);">${s}</span>`).join('')}</div>`
+        : null);
 
     App.addHistory('medication', 'Medicine Searched', `Searched for ${med.name}`);
     App.saveData();
@@ -267,14 +314,19 @@ function displayGenericResult(query) {
     const container = document.getElementById('medicine-details');
     container.classList.remove('hidden');
 
+    // Only the name is shown for an unknown medicine; every other section is
+    // hidden entirely rather than displaying "Information not available".
     document.getElementById('medicine-name').textContent = capitalize(query);
-    document.getElementById('medicine-type').textContent = 'Information not available';
-    document.getElementById('medicine-description').textContent = `Detailed information for "${query}" is not available in our local database. Please consult a healthcare professional or pharmacist for accurate information about this medication.`;
-    document.getElementById('medicine-forms').innerHTML = '<span class="tag">Consult pharmacist</span>';
-    document.getElementById('medicine-dosage').textContent = 'Please consult your doctor for dosage information.';
-    document.getElementById('medicine-side-effects').innerHTML = '<span class="tag">Consult pharmacist</span>';
-    document.getElementById('medicine-interactions').innerHTML = '<span class="tag">Consult pharmacist</span>';
-    document.getElementById('medicine-price').textContent = 'Price information not available. Please check with your local pharmacy.';
-    document.getElementById('medicine-substitutes').innerHTML = '<span class="tag">Consult pharmacist</span>';
+    document.getElementById('medicine-type').classList.add('hidden');
+    setDetailContent('medicine-description', null);
+    setDetailContent('medicine-forms', null);
+    setDetailContent('medicine-dosage', null);
+    setDetailContent('medicine-side-effects', null);
+    setDetailContent('medicine-interactions', null);
+    setDetailContent('medicine-price', null);
+    setDetailContent('medicine-substitutes', null);
+
+    App.addHistory('medication', 'Medicine Searched', `Searched for ${query}`);
+    App.saveData();
 }
 

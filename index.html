@@ -74,7 +74,11 @@
                     </div>
                     <div class="form-group">
                         <label><i class="fas fa-lock"></i> Password</label>
-                        <input type="password" id="reg-password" required placeholder="Create password">
+                        <input type="password" id="reg-password" required placeholder="Create password"
+                               oninput="updatePasswordStrength()">
+                        <div id="reg-password-hint" class="password-hint">
+                            Use 8+ characters with an uppercase, lowercase, number and symbol.
+                        </div>
                     </div>
                     <div class="form-group">
                         <label><i class="fas fa-birthday-cake"></i> Date of Birth</label>
@@ -275,7 +279,7 @@
                             <i class="fas fa-cloud-upload-alt upload-icon"></i>
                             <h2>Drop your prescription here</h2>
                             <p>or click to browse files</p>
-                            <p class="upload-hint">Supports: JPG, PNG, PDF (Max 10MB)</p>
+                            <p class="upload-hint">Supports: JPG, PNG, PDF</p>
                             <input type="file" id="file-input" accept="image/*,.pdf" hidden>
                             <button class="btn-primary" onclick="document.getElementById('file-input').click()">
                                 <i class="fas fa-upload"></i> Choose File
@@ -298,7 +302,7 @@
                                 </div>
                                 <div class="upload-actions">
                                     <button class="btn-primary" onclick="processPrescription()">
-                                        <i class="fas fa-magic"></i> Process with AI
+                                        <i class="fas fa-magic"></i> Scan
                                     </button>
                                     <button class="btn-secondary" onclick="clearUpload()">
                                         <i class="fas fa-redo"></i> Upload Different
@@ -354,18 +358,6 @@
                             </div>
                             <div class="card-body">
                                 <div class="results-content">
-                                    <div class="result-section">
-                                        <h3><i class="fas fa-user-md"></i> Doctor Information</h3>
-                                        <p id="result-doctor">-</p>
-                                    </div>
-                                    <div class="result-section">
-                                        <h3><i class="fas fa-calendar"></i> Date</h3>
-                                        <p id="result-date">-</p>
-                                    </div>
-                                    <div class="result-section">
-                                        <h3><i class="fas fa-notes-medical"></i> Diagnosis</h3>
-                                        <p id="result-diagnosis">-</p>
-                                    </div>
                                     <div class="result-section">
                                         <h3><i class="fas fa-pills"></i> Medications</h3>
                                         <div id="result-medications" class="medications-list"></div>
@@ -621,24 +613,14 @@
             <section id="page-wearable" class="page">
                 <div class="page-header">
                     <h1>Wearable Monitor</h1>
-                    <p>Real-time health data simulation from your smartwatch</p>
+                    <p>Live health data from your Fire-Boltt watch</p>
                 </div>
 
                 <!-- Controls -->
                 <div class="wl-controls">
                     <button id="wl-toggle-btn" class="btn-primary" onclick="toggleWearableSimulator()">
-                        <i class="fas fa-pause"></i> Pause Simulation
+                        <i class="fas fa-pause"></i> Pause Live Feed
                     </button>
-                    <div class="wl-profile-select">
-                        <label>Health Profile:</label>
-                        <select onchange="setWearableProfile(this.value)">
-                            <option value="normal">Normal</option>
-                            <option value="diabetic">Diabetic</option>
-                            <option value="hypertensive">Hypertensive</option>
-                            <option value="cardiac">Cardiac</option>
-                            <option value="elderly">Elderly</option>
-                        </select>
-                    </div>
                     <div class="wl-emergency-sim">
                         <label>Simulate Emergency:</label>
                         <button class="btn-danger btn-sm" onclick="simulateEmergency('high_hr')"><i class="fas fa-heart"></i> High HR</button>
@@ -725,6 +707,14 @@
                         <div class="wl-vital-info">
                             <span id="wl-resp" class="wl-vital-value">16/min</span>
                             <span class="wl-vital-label">Respiratory Rate</span>
+                        </div>
+                    </div>
+
+                    <div class="wl-vital-card wl-weight">
+                        <div class="wl-vital-icon"><i class="fas fa-weight-scale"></i></div>
+                        <div class="wl-vital-info">
+                            <span id="wl-weight" class="wl-vital-value">70 kg</span>
+                            <span class="wl-vital-label">Weight</span>
                         </div>
                     </div>
                 </div>
@@ -814,6 +804,17 @@
                         <div id="wl-emergency-contacts" class="card-body">
                             <p class="empty-state" style="padding: 0.5rem;">No emergency contacts set</p>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Google Drive Sync -->
+                <div class="wl-card">
+                    <div class="card-header">
+                        <h2><i class="fab fa-google-drive"></i> Google Drive Sync</h2>
+                    </div>
+                    <div class="card-body">
+                        <p id="drive-status-line" class="empty-state" style="margin-bottom: 0.75rem;">Checking connection...</p>
+                        <div id="drive-latest" style="margin-top: 0.5rem; font-size: 0.9em; line-height: 1.6;"></div>
                     </div>
                 </div>
             </section>
@@ -1135,6 +1136,8 @@
     <script src="js/reminders.js"></script>
     <script src="js/medicine-info.js"></script>
     <script src="js/wearable.js"></script>
+    <script src="js/push.js"></script>
+    <script src="js/drive.js"></script>
 
     <!-- Service Worker Registration -->
     <script>

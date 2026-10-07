@@ -3,6 +3,9 @@ const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 
+const pushModule = require('./push');
+const driveModule = require('./drive');
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -290,12 +293,187 @@ app.post('/api/emergency-alert', async (req, res) => {
     });
 });
 
+// ===== Web Push endpoints =====
+app.get('/api/push/vapid-key', (req, res) => {
+    if (!pushModule.pushEnabled) {
+        return res.status(503).json({
+            success: false,
+            error: 'Web Push not configured. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in .env'
+        });
+    }
+    res.json({ success: true, publicKey: pushModule.VAPID_PUBLIC_KEY });
+});
+
+// The client posts its push subscription together with its current reminders so
+// the server can dispatch on time even when no tab is open.
+app.post('/api/push/subscribe', (req, res) => {
+    const { subscription, reminders } = req.body || {};
+
+    if (!pushModule.pushEnabled) {
+        return res.status(503).json({ success: false, error: 'Web Push not configured' });
+    }
+    if (!subscription || !subscription.endpoint || !subscription.keys) {
+        return res.status(400).json({ success: false, error: 'Invalid push subscription' });
+    }
+
+    const endpoint = subscription.endpoint;
+    pushModule.pushSubscriptions.set(endpoint, {
+        // Full subscription object is what web-push actually sends to.
+        subscription,
+        endpoint,
+        keys: subscription.keys,
+        reminders: Array.isArray(reminders) ? reminders : [],
+        lastSent: (pushModule.pushSubscriptions.get(endpoint) || {}).lastSent || {}
+    });
+    pushModule.saveSubscriptions();
+
+    console.log(`Web Push: subscription registered (${pushModule.pushSubscriptions.size} total)`);
+    res.json({ success: true, count: pushModule.pushSubscriptions.size });
+});
+
+// Re-sync the schedule without re-registering the subscription (cheap to call
+// whenever reminders change).
+app.post('/api/push/schedule', (req, res) => {
+    const { reminders } = req.body || {};
+    if (!pushModule.pushEnabled) {
+        return res.status(503).json({ success: false, error: 'Web Push not configured' });
+    }
+
+    const endpoint = req.body && req.body.endpoint;
+    if (endpoint && pushModule.pushSubscriptions.has(endpoint)) {
+        pushModule.pushSubscriptions.get(endpoint).reminders = Array.isArray(reminders) ? reminders : [];
+        pushModule.saveSubscriptions();
+        return res.json({ success: true });
+    }
+
+    // Fall back to updating every registration for this browser-less session.
+    let n = 0;
+    for (const rec of pushModule.pushSubscriptions.values()) {
+        rec.reminders = Array.isArray(reminders) ? reminders : [];
+        n++;
+    }
+    pushModule.saveSubscriptions();
+    res.json({ success: true, updated: n });
+});
+
+app.post('/api/push/test', async (req, res) => {
+    if (!pushModule.pushEnabled) {
+        return res.status(503).json({ success: false, error: 'Web Push not configured' });
+    }
+    const { endpoint } = req.body || {};
+    const rec = endpoint ? pushModule.pushSubscriptions.get(endpoint) : null;
+    if (!rec) return res.status(404).json({ success: false, error: 'No subscription found' });
+
+    const result = await pushModule.sendPush(rec.subscription, {
+        title: 'MediAssist AI',
+        body: 'Push notifications are working.',
+        url: '/',
+        tag: 'test'
+    });
+    res.json(result);
+});
+
+app.get('/api/push/status', (req, res) => {
+    res.json({
+        success: true,
+        enabled: pushModule.pushEnabled,
+        subscriptions: pushModule.pushSubscriptions.size
+    });
+});
+
+// ===== Google Drive sync endpoints =====
+app.get('/api/drive/status', (req, res) => {
+    res.json(driveModule.status());
+});
+
+// Start the Google OAuth consent flow.
+app.get('/api/drive/connect', (req, res) => {
+    if (!driveModule.enabled) {
+        return res.status(503).json({
+            success: false,
+            error: 'Google Drive sync not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env'
+        });
+    }
+    res.redirect(driveModule.authUrl());
+});
+
+// Google redirects here after the user approves access.
+app.get('/api/oauth2callback', async (req, res) => {
+    const code = req.query.code;
+    if (!code) {
+        return res.redirect('/?drive=error');
+    }
+    try {
+        await driveModule.exchangeCode(code);
+        res.redirect('/?drive=connected');
+    } catch (err) {
+        console.error('OAuth callback failed:', err.message);
+        res.redirect('/?drive=error');
+    }
+});
+
+// Run a sync immediately.
+app.post('/api/drive/sync', async (req, res) => {
+    try {
+        const result = await driveModule.syncNow();
+        if (result.ok) {
+            res.json({ success: true, ...result });
+        } else if (result.reason === 'configured') {
+            res.status(503).json({ success: false, error: 'Drive sync not configured in .env' });
+        } else if (result.reason === 'not-connected') {
+            res.status(401).json({ success: false, error: 'Google Drive not connected yet' });
+        } else if (result.reason === 'network') {
+            res.status(502).json({ success: false, error: 'Could not reach Google: ' + (result.error || 'network error') });
+        } else {
+            res.status(500).json({ success: false, error: 'Sync failed' });
+        }
+    } catch (err) {
+        console.error('Drive sync route error:', err.message);
+        res.status(500).json({ success: false, error: 'Sync failed: ' + err.message });
+    }
+});
+
+// Parsed health data for the wearable page.
+app.get('/api/drive/data', (req, res) => {
+    res.json(driveModule.healthData());
+});
+
 // ===== Start server =====
+
+// SPA fallback: unknown GET paths (e.g. /wearable from the OAuth redirect)
+// serve the single-page app instead of a 404.
+app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    if (req.path.startsWith('/api')) return next();
+    if (path.extname(req.path)) return next();
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 const PORT = process.env.PORT || 4000;
+// Keep serving if a single background task (e.g. Drive/push) hits a
+// transient network error - log it instead of crashing the process.
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection (kept serving):', reason && reason.message ? reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception (kept serving):', err.message);
+});
+
 app.listen(PORT, async () => {
     console.log(`\nMediAssist AI Server running on http://localhost:${PORT}`);
     console.log(`Static files served from: ${__dirname}`);
     console.log(`Twilio SMS: ${twilioClient ? 'ACTIVE - real SMS will be sent' : 'NOT CONFIGURED - edit .env file'}`);
+    console.log(`Web Push: ${pushModule.pushEnabled ? 'ENABLED - medication reminders will be delivered' : 'NOT CONFIGURED - add VAPID keys to .env'}`);
+    if (pushModule.pushEnabled) {
+        pushModule.startPushScheduler();
+        console.log('  Scheduler checks every 30s and pushes inside each dose window.');
+    }
+
+    console.log(`Google Drive sync: ${driveModule.enabled ? 'ENABLED - set up .env connexion' : 'NOT CONFIGURED - add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env'}`);
+    if (driveModule.enabled) {
+        driveModule.startSyncScheduler();
+        console.log(`  Auto-syncs every ${process.env.DRIVE_SYNC_INTERVAL_MIN || 20} minutes once connected.`);
+        console.log(`  Open ${process.env.APP_BASE_URL || 'http://localhost:4000'}/api/drive/connect to link your Google account.`);
+    }
 
     const ocr = await probeOcrService();
     if (ocr.reachable) {

@@ -133,7 +133,7 @@ async function processPrescription() {
     };
 
     App.prescriptions.push(prescription);
-    App.addHistory('upload', 'Prescription Uploaded', `Uploaded prescription from Dr. ${results.doctor}`);
+    App.addHistory('upload', 'Prescription Uploaded', `Uploaded prescription with ${results.medications.length} medicine(s)`);
     App.saveData();
     App.updateDashboard();
 }
@@ -194,15 +194,15 @@ async function ocrWithTesseractJs(file, stepEl) {
         if (span) span.textContent = t;
     };
 
-    setStepText('Preparing image for browser OCR...');
+    setStepText('Analyzing image...');
     const preprocessedBlob = await preprocessImage(file);
 
     const result = await Tesseract.recognize(preprocessedBlob, 'eng', {
         logger: m => {
             if (m.status === 'recognizing text') {
-                setStepText(`Browser OCR extracting text... ${Math.round(m.progress * 100)}%`);
+                setStepText(`Extracting text... ${Math.round(m.progress * 100)}%`);
             } else if (m.status === 'loading language traineddata') {
-                setStepText('Loading browser OCR language data...');
+                setStepText('Loading OCR language data...');
             }
         }
     });
@@ -226,27 +226,17 @@ async function runOcrWithFallback(file, stepEl) {
     }
 
     if (outcome === null) {
-        // Confirm the service really is down before claiming it is offline,
-        // otherwise a rejected upload (too large, unreadable, bad extension)
-        // gets reported as an outage.
-        const status = await getOcrStatus(true);
-        const reallyOffline = !status.available;
-
+        // Fall back to the in-browser engine automatically and quietly — the
+        // user never needs to see that the primary service was unavailable.
         try {
             outcome = await ocrWithTesseractJs(file, stepEl);
-            showToast(
-                reallyOffline
-                    ? 'Python OCR offline - used browser OCR instead'
-                    : 'Python OCR rejected the file - used browser OCR instead',
-                'warning'
-            );
         } catch (e) {
             console.error('All OCR engines failed:', e);
             if (stepEl) {
                 const span = stepEl.querySelector('span');
-                if (span) span.textContent = 'OCR failed - check the OCR service or your connection';
+                if (span) span.textContent = 'OCR failed - please try again with a clearer image';
             }
-            showToast('OCR failed. Start the Python OCR service or check your connection.', 'error');
+            showToast('OCR failed. Please try again with a clearer image.', 'error');
             return { text: '', confidence: 0, engine: null, engineLabel: 'Unavailable' };
         }
     }
@@ -265,20 +255,21 @@ async function runOcrWithFallback(file, stepEl) {
     return outcome;
 }
 
-// Reflects the active OCR engine in the results header.
+// Reflects the active OCR engine in the results header. Only the primary
+// (Python) engine is shown; a fallback to the browser engine stays invisible.
 function setOcrEngineBadge(outcome) {
     const badge = document.getElementById('ocr-engine-badge');
     if (!badge) return;
 
-    if (!outcome.engine) {
+    const isPython = outcome && outcome.engine === 'python-tesseract';
+    if (!isPython) {
         badge.classList.add('hidden');
         return;
     }
 
-    const isPython = outcome.engine === 'python-tesseract';
     badge.classList.remove('hidden');
-    badge.className = `ocr-engine-badge ${isPython ? 'python' : 'browser'}`;
-    badge.innerHTML = `<i class="fas ${isPython ? 'fa-server' : 'fa-laptop'}"></i> ${outcome.engineLabel} - ${outcome.confidence}% confidence`;
+    badge.className = 'ocr-engine-badge python';
+    badge.innerHTML = `<i class="fas fa-server"></i> ${outcome.engineLabel} - ${outcome.confidence}% confidence`;
 }
 
 function fileToBase64(file) {
@@ -783,9 +774,8 @@ const duration = durationMatch ? durationMatch[0].trim() : info.duration;
 }
 
 function displayResults(results) {
-    document.getElementById('result-doctor').textContent = `Dr. ${results.doctor}`;
-    document.getElementById('result-date').textContent = results.date;
-    document.getElementById('result-diagnosis').textContent = results.diagnosis;
+    // Doctor name, date and diagnosis are deliberately not rendered — results
+    // show only the medicines, their doses and related drug info.
 
     const medsContainer = document.getElementById('result-medications');
     if (results.medications.length > 0) {
@@ -830,11 +820,37 @@ function displayResults(results) {
     }
 }
 
+function normalizeMedName(name) {
+    return String(name || '')
+        .toLowerCase()
+        // Treat punctuation OCR often inserts as word separators, so that
+        // "Pan-D" and "Pan D" are recognised as the same medicine.
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// True if this medicine is already on the patient's list (active or not).
+function isMedicineAlreadyTaken(name) {
+    const key = normalizeMedName(name);
+    if (!key) return false;
+    return App.medications.some(m => normalizeMedName(m.name) === key);
+}
+
 function addToMedications() {
     const results = window.currentPrescriptionResults;
     if (!results) return;
 
+    let added = 0;
+    const skipped = [];
+
     results.medications.forEach(med => {
+        // A medicine already on the list is never duplicated.
+        if (isMedicineAlreadyTaken(med.name)) {
+            skipped.push(med.name);
+            return;
+        }
+
         const newMed = {
             id: generateId(),
             name: med.name,
@@ -848,6 +864,7 @@ function addToMedications() {
             warnings: []
         };
         App.medications.push(newMed);
+        added++;
 
         const rxReminder = {
             id: generateId(),
@@ -867,10 +884,25 @@ function addToMedications() {
         if (!dupRx) App.reminders.push(rxReminder);
     });
 
-    App.addHistory('medication', 'Medications Added', `Added ${results.medications.length} medications from prescription`);
+    if (skipped.length > 0) {
+        App.addHistory('medication', 'Duplicate Scan Ignored',
+            `${skipped.join(', ')} already being taken - skipped`);
+        showToast(skipped.length === 1
+            ? `${skipped[0]} is already being taken — skipped`
+            : `${skipped.length} medicines already being taken — skipped`, 'warning');
+    }
+
+    if (added > 0) {
+        App.addHistory('medication', 'Medications Added', `Added ${added} medications from prescription`);
+        showToast(`${added} medication${added === 1 ? '' : 's'} added successfully!`);
+    }
+
     App.saveData();
     App.updateDashboard();
-    showToast(`${results.medications.length} medications added successfully!`);
+
+    if (added === 0) {
+        showToast('All medicines from this scan are already on your list', 'warning');
+    }
 }
 
 function checkInteractionsFromResults() {
@@ -900,7 +932,7 @@ function readAloud() {
         const results = window.currentPrescriptionResults;
         if (!results) return;
 
-        const text = `Prescription from Dr. ${results.doctor}. Diagnosis: ${results.diagnosis}. Medications: ${results.medications.map(m => `${m.name} ${m.dosage}, ${m.frequency}, ${m.instructions}`).join('. ')}.`;
+        const text = `Medications: ${results.medications.map(m => `${m.name} ${m.dosage}, ${m.frequency}, ${m.instructions}`).join('. ')}.`;
 
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 0.9;
@@ -919,10 +951,6 @@ function downloadReport() {
     const report = `
 MediAssist AI - Prescription Report
 ====================================
-
-Doctor: Dr. ${results.doctor}
-Date: ${results.date}
-Diagnosis: ${results.diagnosis}
 
 MEDICATIONS
 -----------

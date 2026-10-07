@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mediassist-v2';
+const CACHE_NAME = 'mediassist-v3';
 const ASSETS_TO_CACHE = [
     '/',
     '/index.html',
@@ -14,6 +14,7 @@ const ASSETS_TO_CACHE = [
     '/js/reminders.js',
     '/js/medicine-info.js',
     '/js/wearable.js',
+    '/js/push.js',
     'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
     'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap'
 ];
@@ -72,12 +73,26 @@ self.addEventListener('fetch', (event) => {
 
 // Push notifications
 self.addEventListener('push', (event) => {
+    let payload = {};
+    if (event.data) {
+        try {
+            payload = event.data.json();
+        } catch (e) {
+            payload = { body: event.data.text() };
+        }
+    }
+
     const options = {
-        body: event.data ? event.data.text() : 'Time to take your medication!',
+        body: payload.body || 'Time to take your medication!',
         icon: '/assets/images/icon.png',
         badge: '/assets/images/badge.png',
         vibrate: [200, 100, 200],
-        tag: 'medication-reminder',
+        requireInteraction: true,
+        tag: payload.tag || 'medication-reminder',
+        data: {
+            reminderId: payload.reminderId || null,
+            url: payload.url || '/'
+        },
         actions: [
             { action: 'taken', title: 'Mark as Taken' },
             { action: 'snooze', title: 'Snooze 10 min' }
@@ -85,7 +100,7 @@ self.addEventListener('push', (event) => {
     };
 
     event.waitUntil(
-        self.registration.showNotification('MediAssist AI', options)
+        self.registration.showNotification(payload.title || 'MediAssist AI', options)
     );
 });
 
@@ -98,7 +113,10 @@ self.addEventListener('notificationclick', (event) => {
         event.waitUntil(
             self.clients.matchAll().then((clients) => {
                 clients.forEach((client) => {
-                    client.postMessage({ type: 'DOSE_TAKEN', reminderId: event.notification.tag });
+                    client.postMessage({
+                        type: 'DOSE_TAKEN',
+                        reminderId: event.notification.data?.reminderId
+                    });
                 });
             })
         );
@@ -112,9 +130,18 @@ self.addEventListener('notificationclick', (event) => {
             });
         }, 10 * 60 * 1000);
     } else {
-        // Open the app
+        // Open the app, focusing an existing tab if one is already open.
         event.waitUntil(
-            self.clients.openWindow('/')
+            self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+                const url = event.notification.data?.url || '/';
+                for (const client of clientList) {
+                    if (client.url.includes(self.location.origin) && 'focus' in client) {
+                        client.navigate(url);
+                        return client.focus();
+                    }
+                }
+                return self.clients.openWindow(url);
+            })
         );
     }
 });
