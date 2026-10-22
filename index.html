@@ -37,6 +37,21 @@
                 <p>Your Intelligent Healthcare Companion</p>
             </div>
 
+            <!-- Role selector: two separate logins (patient / pharmacist) -->
+            <div class="role-toggle" style="display:flex;gap:8px;margin-bottom:18px;">
+                <button type="button" id="role-btn-patient" onclick="setAuthRole('patient')"
+                        style="flex:1;padding:12px;border-radius:10px;border:2px solid var(--primary,#4f46e5);background:var(--primary,#4f46e5);color:#fff;font-weight:600;cursor:pointer;transition:.2s;">
+                    <i class="fas fa-user"></i> Patient
+                </button>
+                <button type="button" id="role-btn-pharmacist" onclick="setAuthRole('pharmacist')"
+                        style="flex:1;padding:12px;border-radius:10px;border:2px solid var(--border-color,#d0d7de);background:transparent;color:var(--text-primary,#111);font-weight:600;cursor:pointer;transition:.2s;">
+                    <i class="fas fa-user-md"></i> Pharmacist
+                </button>
+            </div>
+            <p id="auth-role-hint" style="text-align:center;font-size:.85rem;color:var(--text-muted,#666);margin:-8px 0 16px;">
+                Signing in as a <strong>Patient</strong>
+            </p>
+
             <!-- Login Form -->
             <div id="login-form" class="auth-form">
                 <h2>Welcome Back</h2>
@@ -129,6 +144,9 @@
                 <a href="#" class="nav-item" data-page="history" onclick="navigateTo('history')">
                     <i class="fas fa-history"></i><span>History</span>
                 </a>
+                <a href="#" class="nav-item" data-page="pharmacist" onclick="navigateTo('pharmacist')" style="display:none;">
+                    <i class="fas fa-user-md"></i><span>Pharmacy Dashboard</span>
+                </a>
             </nav>
             <div class="sidebar-footer">
                 <button class="btn-logout" onclick="handleLogout()">
@@ -159,6 +177,22 @@
                 <div class="page-header">
                     <h1>Dashboard</h1>
                     <p id="greeting">Good morning!</p>
+                </div>
+
+                <!-- Unique patient code shared with the pharmacist -->
+                <div id="patient-code-card" class="card" style="margin-bottom:20px;border-left:4px solid var(--primary,#4f46e5);">
+                    <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                        <div>
+                            <div style="font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted,#666);">
+                                <i class="fas fa-id-card"></i> Your Patient Code
+                            </div>
+                            <div id="patient-code-value" style="font-size:1.7rem;font-weight:700;letter-spacing:.12em;color:var(--primary,#4f46e5);">—</div>
+                            <div style="font-size:.8rem;color:var(--text-muted,#666);">Share this code with your pharmacist to give them access to your records.</div>
+                        </div>
+                        <button class="btn-secondary" onclick="copyPatientCode()">
+                            <i class="fas fa-copy"></i> Copy Code
+                        </button>
+                    </div>
                 </div>
 
                 <div class="stats-grid">
@@ -841,6 +875,71 @@
                     </div>
                 </div>
             </section>
+
+            <!-- Pharmacist Dashboard -->
+            <section id="page-pharmacist" class="page">
+                <div class="page-header">
+                    <h1>Pharmacy Dashboard</h1>
+                    <p>Access a patient with their unique code, then scan and verify prescriptions.</p>
+                </div>
+
+                <div class="card" style="margin-bottom:20px;">
+                    <div class="card-header">
+                        <h2><i class="fas fa-key"></i> Access Patient</h2>
+                    </div>
+                    <div class="card-body" style="display:flex;gap:10px;flex-wrap:wrap;">
+                        <input type="text" id="pharm-code-input" placeholder="Enter patient code (e.g. PAT-AB12CD)"
+                               style="flex:1;min-width:220px;padding:12px 14px;border-radius:10px;border:1px solid var(--border-color,#d0d7de);text-transform:uppercase;letter-spacing:.06em;">
+                        <button class="btn-primary" onclick="loadPatientByCode()">
+                            <i class="fas fa-search"></i> Load Patient
+                        </button>
+                    </div>
+                </div>
+
+                <div id="pharm-patient-area" class="hidden">
+                    <div class="card" style="margin-bottom:20px;">
+                        <div class="card-header">
+                            <h2><i class="fas fa-user-injured"></i> Patient Profile</h2>
+                            <span id="pharm-patient-code" style="font-size:.8rem;color:var(--text-muted,#666);"></span>
+                        </div>
+                        <div class="card-body" id="pharm-patient-profile" style="line-height:1.9;"></div>
+                    </div>
+
+                    <div class="card" style="margin-bottom:20px;">
+                        <div class="card-header">
+                            <h2><i class="fas fa-pills"></i> Current Medications</h2>
+                        </div>
+                        <div class="card-body" id="pharm-medications"></div>
+                    </div>
+
+                    <div class="card" style="margin-bottom:20px;">
+                        <div class="card-header">
+                            <h2><i class="fas fa-history"></i> Patient History</h2>
+                        </div>
+                        <div class="card-body" id="pharm-history"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h2><i class="fas fa-file-medical-alt"></i> Scan &amp; Verify Prescription</h2>
+                        </div>
+                        <div class="card-body">
+                            <p style="color:var(--text-muted,#666);font-size:.9rem;margin-bottom:12px;">
+                                Upload the prescription, review the OCR result, then verify it before adding it to the patient's medications.
+                            </p>
+                            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+                                <input type="file" id="pharm-rx-file" accept="image/*,application/pdf"
+                                       style="flex:1;min-width:220px;padding:10px;border:1px dashed var(--border-color,#d0d7de);border-radius:10px;">
+                                <button class="btn-primary" onclick="scanPharmacistPrescription()">
+                                    <i class="fas fa-camera"></i> Scan Prescription
+                                </button>
+                            </div>
+                            <div id="pharm-scan-status" style="font-size:.85rem;color:var(--text-muted,#666);margin-bottom:10px;"></div>
+                            <div id="pharm-rx-results"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </main>
     </div>
 
@@ -1130,6 +1229,7 @@
     <script src="js/app.js"></script>
     <script src="js/auth.js"></script>
     <script src="js/prescription.js"></script>
+    <script src="js/pharmacist.js"></script>
     <script src="js/medications.js"></script>
     <script src="js/refills.js"></script>
     <script src="js/interactions.js"></script>

@@ -1,0 +1,43 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // Reads the caller's own profile to decide whether they are a pharmacist.
+    // get() is a rules-side lookup and does not recurse into these rules.
+    function isPharmacist() {
+      return signedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'pharmacist';
+    }
+
+    // A patient can only reserve a code for their own account; any signed-in
+    // user (i.e. a pharmacist) may look a single code up by its exact ID.
+    // Listing the collection is deliberately not allowed.
+    match /patientCodes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /users/{uid} {
+      allow get: if isSelf(uid) || isPharmacist();
+      allow create, update, delete: if isSelf(uid);
+
+      // Patients own their records. Pharmacists may read them and may only
+      // write the three collections the pharmacy dashboard needs.
+      match /{subcollection}/{docId} {
+        allow read: if isSelf(uid) || isPharmacist();
+        allow write: if isSelf(uid) ||
+          (isPharmacist() && subcollection in ['medications', 'prescriptions', 'history']);
+      }
+    }
+  }
+}

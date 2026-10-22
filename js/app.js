@@ -29,13 +29,73 @@ const App = {
                 };
 
                 try {
-                    const userDoc = await db.collection('users').doc(user.uid).get();
-                    if (userDoc.exists) {
+                    // The user doc may not be written yet during sign-up, so
+                    // give it a few short retries before falling back.
+                    let userDoc = null;
+                    for (let i = 0; i < 5; i++) {
+                        userDoc = await db.collection('users').doc(user.uid).get();
+                        if (userDoc.exists) break;
+                        await new Promise(r => setTimeout(r, 400));
+                    }
+                    if (userDoc && userDoc.exists) {
                         const data = userDoc.data();
                         this.currentUser = { ...this.currentUser, ...data, uid: user.uid };
                     }
                 } catch (e) {
                     console.log('Could not load user profile:', e);
+                }
+                // Role resolution order: explicit login/registration choice ->
+                // this device's remembered role -> saved profile role -> the
+                // marker on the auth account -> patient. The most recent
+                // explicit choice always wins, so switching the login type
+                // immediately switches the app.
+                let storedRole = null;
+                try { storedRole = localStorage.getItem('mediassist_role__' + user.uid); } catch (e) { /* ignore */ }
+                let markerRole = null;
+                try {
+                    if (user.photoURL && user.photoURL.indexOf('mediassist-role:') === 0) {
+                        markerRole = user.photoURL.split(':')[1];
+                    }
+                } catch (e) { /* ignore */ }
+                let justRegistered = null;
+                if (typeof pendingRole !== 'undefined' && pendingRole) {
+                    justRegistered = pendingRole;
+                    pendingRole = null;
+                }
+                this.currentUser.role = justRegistered || storedRole || this.currentUser.role || markerRole || 'patient';
+                if (this.currentUser.role !== 'patient' && this.currentUser.role !== 'pharmacist') {
+                    this.currentUser.role = 'patient';
+                }
+                try { localStorage.setItem('mediassist_role__' + user.uid, this.currentUser.role); } catch (e) { /* ignore */ }
+
+                // A patient code is only useful if the matching patientCodes
+                // document actually exists and points at this account.
+                // Accounts made before codes existed, or whose reservation was
+                // blocked by Firestore rules, get one issued/repaired here.
+                if (this.currentUser.role === 'patient' &&
+                    typeof createUniquePatientCode === 'function') {
+                    let code = this.currentUser.patientCode;
+                    let codeValid = false;
+                    try {
+                        if (code) {
+                            const codeDoc = await db.collection('patientCodes').doc(code).get();
+                            codeValid = codeDoc.exists && codeDoc.data().uid === user.uid;
+                        }
+                        if (!codeValid) {
+                            code = await createUniquePatientCode();
+                            await db.collection('patientCodes').doc(code).set({
+                                uid: user.uid,
+                                name: this.currentUser.name || '',
+                                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                            await db.collection('users').doc(user.uid).set(
+                                { role: 'patient', patientCode: code }, { merge: true });
+                            codeValid = true;
+                        }
+                    } catch (e) {
+                        console.warn('Could not issue patient code:', e.message);
+                    }
+                    this.currentUser.patientCode = codeValid ? code : '';
                 }
 
                 await this.loadFromFirestore();
@@ -171,6 +231,37 @@ const App = {
 
         // Google Drive OAuth returns here via ?drive=connected|error.
         this.handleDriveRedirect();
+
+        // Show only the pages this account's role is allowed to use.
+        this.applyRoleUI();
+    },
+
+    applyRoleUI() {
+        const role = this.currentUser?.role || 'patient';
+        const isPharmacist = role === 'pharmacist';
+
+        document.querySelectorAll('.nav-item').forEach(n => {
+            const p = n.dataset.page;
+            // Patients: everything except the pharmacy dashboard and the
+            // prescription scanner (only a pharmacist may scan/verify).
+            // Pharmacists: only the pharmacy dashboard.
+            const visible = isPharmacist
+                ? p === 'pharmacist'
+                : (p !== 'pharmacist' && p !== 'upload');
+            n.style.display = visible ? '' : 'none';
+        });
+
+        const codeCard = document.getElementById('patient-code-card');
+        if (codeCard) codeCard.style.display = isPharmacist ? 'none' : '';
+        const codeEl = document.getElementById('patient-code-value');
+        if (codeEl) codeEl.textContent = this.currentUser?.patientCode || '—';
+
+        if (isPharmacist) {
+            this.navigateTo('pharmacist');
+            if (typeof initPharmacistUI === 'function') initPharmacistUI();
+        } else {
+            this.navigateTo('dashboard');
+        }
     },
 
     handleDriveRedirect() {
@@ -192,6 +283,12 @@ const App = {
     },
 
     navigateTo(page) {
+        // Role guard: a pharmacist only sees the pharmacy dashboard, and a
+        // patient can neither open the pharmacy dashboard nor scan prescriptions.
+        const role = this.currentUser?.role || 'patient';
+        if (role === 'pharmacist' && page !== 'pharmacist') page = 'pharmacist';
+        if (role !== 'pharmacist' && (page === 'pharmacist' || page === 'upload')) page = 'dashboard';
+
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
@@ -502,6 +599,21 @@ function getTimeAgo(date) {
 
 function navigateTo(page) {
     App.navigateTo(page);
+}
+
+function copyPatientCode() {
+    const code = App.currentUser?.patientCode || '';
+    if (!code) {
+        showToast('No patient code found', 'error');
+        return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code)
+            .then(() => showToast('Patient code copied'))
+            .catch(() => showToast('Your code: ' + code));
+    } else {
+        showToast('Your code: ' + code);
+    }
 }
 
 // ===== Dynamic Health Tips =====
