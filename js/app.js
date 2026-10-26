@@ -11,6 +11,7 @@ const App = {
         this.setupDragDrop();
         this.setupFileInput();
         this.setupNotifications();
+        this.startMedicationExpiryWatcher();
 
         auth.onAuthStateChanged(async (user) => {
             if (user) {
@@ -99,6 +100,15 @@ const App = {
                 }
 
                 await this.loadFromFirestore();
+
+                // Finish any course that ran out while the app was closed
+                // before the dashboard, reminders and refills are rendered.
+                if (typeof archiveExpiredMedications === 'function') {
+                    try { archiveExpiredMedications(); } catch (e) {
+                        console.warn('Medication expiry check failed:', e);
+                    }
+                }
+
                 this.showApp();
 
                 // Register this browser for medication push notifications.
@@ -129,6 +139,29 @@ const App = {
                 auth.signOut();
             }
         }, 60000);
+    },
+
+    // Courses can finish while the app stays open (e.g. at midnight), so
+    // re-check every minute and whenever the tab becomes visible again.
+    startMedicationExpiryWatcher() {
+        if (this._expiryTimer) clearInterval(this._expiryTimer);
+
+        const check = () => {
+            if (!this.currentUser || !FB.userId()) return;
+            if (typeof archiveExpiredMedications !== 'function') return;
+            if (!archiveExpiredMedications()) return;
+
+            this.updateDashboard();
+            if (this.currentPage === 'medications' && typeof renderMedications === 'function') renderMedications();
+            if (this.currentPage === 'refills' && typeof renderRefillPage === 'function') renderRefillPage();
+            if (this.currentPage === 'reminders' && typeof renderReminders === 'function') renderReminders();
+            if (this.currentPage === 'interactions' && typeof updateInteractionDrugsList === 'function') updateInteractionDrugsList();
+        };
+
+        this._expiryTimer = setInterval(check, 60000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) check();
+        });
     },
 
     async saveToFirestore() {
@@ -229,9 +262,6 @@ const App = {
             WearableSimulator.start();
         }
 
-        // Google Drive OAuth returns here via ?drive=connected|error.
-        this.handleDriveRedirect();
-
         // Show only the pages this account's role is allowed to use.
         this.applyRoleUI();
     },
@@ -262,24 +292,6 @@ const App = {
         } else {
             this.navigateTo('dashboard');
         }
-    },
-
-    handleDriveRedirect() {
-        const params = new URLSearchParams(window.location.search);
-        const drive = params.get('drive');
-        if (!drive && !params.has('drive')) return;
-
-        if (drive === 'connected') {
-            showToast('Google Drive connected', 'success');
-        } else if (drive === 'error') {
-            showToast('Google Drive connection failed', 'error');
-        }
-        this.navigateTo('wearable');
-
-        // Remove the flag so a refresh doesn't re-trigger the toast.
-        const url = new URL(window.location.href);
-        url.searchParams.delete('drive');
-        history.replaceState(null, '', url.pathname + url.search);
     },
 
     navigateTo(page) {
@@ -325,7 +337,6 @@ const App = {
                 break;
             case 'wearable':
                 if (typeof initWearablePage === 'function') initWearablePage();
-                if (typeof initDrivePanel === 'function') initDrivePanel();
                 break;
         }
     },
@@ -341,13 +352,17 @@ const App = {
     },
 
     updateDashboard() {
-        document.getElementById('stat-medications').textContent = this.medications.length;
+        const currentMeds = typeof getCurrentMedications === 'function'
+            ? getCurrentMedications()
+            : this.medications.filter(med => med.active !== false);
+
+        document.getElementById('stat-medications').textContent = currentMeds.length;
         document.getElementById('stat-prescriptions').textContent = this.prescriptions.length;
 
         const todayReminders = this.getTodayReminders();
         document.getElementById('stat-reminders').textContent = todayReminders.length;
 
-        const warnings = this.medications.reduce((acc, med) => acc + (med.warnings?.length || 0), 0);
+        const warnings = currentMeds.reduce((acc, med) => acc + (med.warnings?.length || 0), 0);
         document.getElementById('stat-warnings').textContent = warnings;
 
         this.renderDashboardReminders(todayReminders);
@@ -370,6 +385,10 @@ const App = {
     getTodayReminders() {
         return this.reminders.filter(r => {
             if (!r.active) return false;
+            if (typeof isMedicationCurrent === 'function') {
+                const med = this.medications.find(m => m.id === r.medicationId);
+                if (!med || !isMedicationCurrent(med)) return false;
+            }
             if (r.repeat === 'daily') return true;
             if (r.repeat === 'weekdays') {
                 const day = new Date().getDay();
@@ -430,7 +449,7 @@ const App = {
     renderDashboardPrescriptions() {
         const container = document.getElementById('dashboard-prescriptions');
         if (this.prescriptions.length === 0) {
-            container.innerHTML = '<p class="empty-state">No prescriptions uploaded</p>';
+            container.innerHTML = '<p class="empty-state">No prescriptions added yet</p>';
             return;
         }
 
@@ -659,8 +678,11 @@ function refreshHealthTips() {
     const selected = shuffled.slice(0, 3);
 
     // Add medication-specific tips if user has meds
-    if (App.medications.length > 0) {
-        const medNames = App.medications.map(m => m.name).join(', ');
+    const currentMeds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(m => m.active !== false);
+    if (currentMeds.length > 0) {
+        const medNames = currentMeds.map(m => m.name).join(', ');
         selected.push({
             icon: 'fa-pills',
             color: '#0077b6',

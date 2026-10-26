@@ -5,9 +5,22 @@
 // verify and add medication to a patient's record.
 
 let currentPharmPatient = null;
+let pharmActiveTab = 'current';
+let pharmSearchQuery = '';
+let editingPharmMedId = null;
+
+const PHARM_TAB_PANELS = {
+    current: 'pharm-current-medications',
+    past: 'pharm-past-medications',
+    prescriptions: 'pharm-prescriptions',
+    wearable: 'pharm-wearable'
+};
 
 function initPharmacistUI() {
     currentPharmPatient = null;
+    pharmActiveTab = 'current';
+    pharmSearchQuery = '';
+    editingPharmMedId = null;
     document.getElementById('pharm-patient-area')?.classList.add('hidden');
     const input = document.getElementById('pharm-code-input');
     if (input) input.value = '';
@@ -17,6 +30,589 @@ function initPharmacistUI() {
     if (status) status.textContent = '';
     const file = document.getElementById('pharm-rx-file');
     if (file) file.value = '';
+    const search = document.getElementById('pharm-med-search');
+    if (search) search.value = '';
+    document.querySelectorAll('.pharm-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.pharmTab === 'current');
+    });
+    Object.values(PHARM_TAB_PANELS).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '';
+    });
+    const searchResults = document.getElementById('pharm-search-results');
+    if (searchResults) {
+        searchResults.innerHTML = '';
+        searchResults.classList.add('hidden');
+    }
+    resetPharmacistHistory();
+}
+
+function resetPharmacistHistory() {
+    const body = document.getElementById('pharm-history');
+    const header = document.querySelector('.pharm-history-header');
+    if (body) body.classList.add('hidden');
+    if (header) header.classList.remove('open');
+}
+
+function togglePharmacistHistory() {
+    const body = document.getElementById('pharm-history');
+    const header = document.querySelector('.pharm-history-header');
+    if (!body) return;
+    const opening = body.classList.contains('hidden');
+    body.classList.toggle('hidden', !opening);
+    if (header) header.classList.toggle('open', opening);
+    if (opening) renderPharmacistHistory();
+}
+
+function setPharmacistTab(tab) {
+    if (!PHARM_TAB_PANELS[tab]) return;
+    pharmActiveTab = tab;
+    document.querySelectorAll('.pharm-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.pharmTab === tab);
+    });
+    renderPharmacistMedicationPanels();
+}
+
+function applyPharmacistSearch(value) {
+    pharmSearchQuery = String(value || '').trim().toLowerCase();
+    renderPharmacistMedicationPanels();
+}
+
+function pharmMedIsCurrent(med) {
+    if (typeof isMedicationCurrent === 'function') return isMedicationCurrent(med);
+    return !!med && med.active !== false;
+}
+
+function pharmFormatDate(value) {
+    if (!value) return '';
+    let date;
+    if (value && typeof value.toDate === 'function') {
+        date = value.toDate();
+    } else if (value && typeof value === 'object' && 'seconds' in value) {
+        date = new Date(value.seconds * 1000);
+    } else {
+        date = new Date(value);
+    }
+    if (isNaN(date.getTime())) return String(value);
+    return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function pharmMedEndTime(med) {
+    if (typeof getMedicationEndDate === 'function') {
+        const end = getMedicationEndDate(med);
+        if (end) return end.getTime();
+    }
+    const raw = med.endedAt || med.endDate;
+    const date = raw ? new Date(raw) : null;
+    return date && !isNaN(date.getTime()) ? date.getTime() : 0;
+}
+
+function pharmRxTime(rx) {
+    const date = new Date(rx.verifiedAt || rx.date || 0);
+    return isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function pharmMatches(query, values) {
+    if (!query) return true;
+    return values.some(value => String(value ?? '').toLowerCase().includes(query));
+}
+
+function renderPharmMedicationEntry(med, isCurrent) {
+    const badges = [];
+    if (isCurrent) {
+        badges.push('<span class="pharm-badge">Current</span>');
+    } else {
+        badges.push('<span class="pharm-badge past">Past</span>');
+    }
+    if (med.verified) badges.push('<span class="pharm-badge verified">Verified</span>');
+
+    const start = typeof getMedicationStartDate === 'function' ? getMedicationStartDate(med) : null;
+    const end = typeof getMedicationEndDate === 'function' ? getMedicationEndDate(med) : null;
+    const details = [med.frequency, med.duration].filter(Boolean).map(pharmEsc);
+    let dates = start ? `Started ${pharmFormatDate(start)}` : '';
+    if (!isCurrent && end) dates += `${dates ? ' · ' : ''}Ended ${pharmFormatDate(end)}`;
+    if (!isCurrent && !end && med.endedAt) dates += `${dates ? ' · ' : ''}Completed ${pharmFormatDate(med.endedAt)}`;
+    if (dates) details.push(dates);
+    if (med.notes) details.push(pharmEsc(med.notes));
+    if (med.addedBy) details.push(`Added by ${pharmEsc(med.addedBy)}`);
+
+    const actions = isCurrent
+        ? `<div class="pharm-entry-actions">
+               <button class="btn-secondary btn-sm" onclick="openPharmacistEditMedication('${pharmEsc(med.id)}')">
+                   <i class="fas fa-pen"></i> Edit
+               </button>
+               <button class="btn-danger btn-sm" onclick="removePharmacistMedication('${pharmEsc(med.id)}')">
+                   <i class="fas fa-trash"></i> Remove
+               </button>
+           </div>`
+        : '';
+
+    return `
+        <div class="pharm-entry">
+            <div class="pharm-entry-title">
+                <strong>${pharmEsc(med.name || 'Medication')}</strong>
+                <span>${pharmEsc(med.dosage || '')}</span>
+                ${badges.join('')}
+                ${actions}
+            </div>
+            <div class="pharm-entry-meta">${details.join(' · ')}</div>
+        </div>
+    `;
+}
+
+function renderPharmPrescriptionEntry(rx) {
+    const meds = Array.isArray(rx.medications) ? rx.medications : [];
+    const medItems = meds.map(med => {
+        if (typeof med === 'string') return `<li>${pharmEsc(med)}</li>`;
+        const detail = [med.dosage, med.frequency, med.duration].filter(Boolean).join(' · ');
+        return `<li><strong>${pharmEsc(med.name || 'Medicine')}</strong>${detail ? ` — ${pharmEsc(detail)}` : ''}</li>`;
+    }).join('');
+
+    const meta = [
+        rx.verifiedBy ? `Verified by ${pharmEsc(rx.verifiedBy)}` : '',
+        rx.doctor ? `Doctor: ${pharmEsc(rx.doctor)}` : '',
+        rx.diagnosis ? `Diagnosis: ${pharmEsc(rx.diagnosis)}` : '',
+        rx.date ? pharmFormatDate(rx.date) : '',
+        rx.verifiedAt ? pharmFormatDate(rx.verifiedAt) : ''
+    ].filter(Boolean);
+
+    return `
+        <div class="pharm-entry">
+            <div class="pharm-entry-title">
+                <i class="fas fa-file-prescription" style="color:var(--primary,#0077b6);"></i>
+                Prescription
+                ${rx.verifiedBy ? '<span class="pharm-badge verified">Verified</span>' : ''}
+            </div>
+            <div class="pharm-entry-meta">${meta.join(' · ')}</div>
+            ${medItems
+                ? `<ul class="pharm-rx-meds">${medItems}</ul>`
+                : '<div class="pharm-entry-meta">No medicines recorded for this prescription.</div>'}
+        </div>
+    `;
+}
+
+function pharmWearableTime(record) {
+    const date = new Date(record?.timestamp || record?.recordedAt || 0);
+    if (isNaN(date.getTime())) return '—';
+    return date.toLocaleString(undefined, {
+        day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+    });
+}
+
+function pharmVital(label, value, icon) {
+    return `
+        <div class="pharm-vital">
+            <i class="fas ${icon}"></i>
+            <span class="pharm-vital-label">${pharmEsc(label)}</span>
+            <strong class="pharm-vital-value">${pharmEsc(value)}</strong>
+        </div>
+    `;
+}
+
+function renderPharmacistWearable() {
+    const p = currentPharmPatient;
+    const container = document.getElementById('pharm-wearable');
+    if (!p || !container) return;
+
+    const records = (Array.isArray(p.wearableRecords) ? [...p.wearableRecords] : [])
+        .filter(r => r && (r.timestamp || r.recordedAt))
+        .sort((a, b) => new Date(b.timestamp || b.recordedAt) - new Date(a.timestamp || a.recordedAt));
+
+    const countEl = document.getElementById('pharm-wearable-count');
+    if (countEl) countEl.textContent = records.length;
+
+    if (!records.length) {
+        container.innerHTML = `
+            <div class="pharm-empty-state">
+                <i class="fas fa-heart-pulse"></i>
+                <p>No wearable readings yet.</p>
+                <span>The patient needs to open the Wearable page while signed in so monitor readings are recorded.</span>
+            </div>
+        `;
+        return;
+    }
+
+    const latest = records[0];
+    const bp = latest.bloodPressure || {};
+    const value = (v, suffix = '') => v === undefined || v === null || v === '' ? '—' : `${v}${suffix}`;
+    const vitals = [
+        pharmVital('Heart Rate', value(latest.heartRate, ' bpm'), 'fa-heartbeat'),
+        pharmVital('SpO2', value(latest.spO2, '%'), 'fa-lungs'),
+        pharmVital('Blood Pressure', bp.sys && bp.dia ? `${bp.sys}/${bp.dia} mmHg` : '—', 'fa-heart'),
+        pharmVital('Temperature', value(latest.temperature, ' °C'), 'fa-temperature-half'),
+        pharmVital('Stress', value(latest.stressLevel, '/100'), 'fa-brain'),
+        pharmVital('Respiration', value(latest.respiratoryRate, '/min'), 'fa-wind'),
+        pharmVital('Steps Today', value(latest.steps), 'fa-shoe-prints'),
+        pharmVital('Health Score', value(latest.healthScore, '%'), 'fa-shield-heart')
+    ].join('');
+
+    const rows = records.slice(0, 30).map(record => {
+        const rbp = record.bloodPressure || {};
+        return `
+            <tr>
+                <td>${pharmEsc(pharmWearableTime(record))}</td>
+                <td>${pharmEsc(value(record.heartRate, ' bpm'))}</td>
+                <td>${pharmEsc(value(record.spO2, '%'))}</td>
+                <td>${pharmEsc(rbp.sys && rbp.dia ? `${rbp.sys}/${rbp.dia}` : '—')}</td>
+                <td>${pharmEsc(value(record.temperature, '°C'))}</td>
+                <td>${pharmEsc(record.currentActivity ? String(record.currentActivity).replace('_', ' ') : '—')}</td>
+            </tr>
+        `;
+    }).join('');
+
+    container.innerHTML = `
+        <div class="pharm-wearable-summary">
+            <div>
+                <span class="pharm-wearable-eyebrow">Latest reading</span>
+                <strong>${pharmEsc(pharmWearableTime(latest))}</strong>
+            </div>
+            <span class="pharm-badge">${pharmEsc(latest.currentActivity ? String(latest.currentActivity).replace('_', ' ') : 'monitoring')}</span>
+        </div>
+        <div class="pharm-vitals-grid">${vitals}</div>
+        <div class="pharm-wearable-recent">
+            <h4>Recent Readings</h4>
+            <div class="pharm-wearable-table-wrap">
+                <table class="pharm-wearable-table">
+                    <thead>
+                        <tr>
+                            <th>Recorded</th>
+                            <th>Heart Rate</th>
+                            <th>SpO2</th>
+                            <th>BP</th>
+                            <th>Temp</th>
+                            <th>Activity</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+function renderPharmacistMedicationPanels() {
+    const p = currentPharmPatient;
+    if (!p) return;
+
+    const meds = Array.isArray(p.medications) ? [...p.medications] : [];
+    const current = meds.filter(pharmMedIsCurrent);
+    const past = meds
+        .filter(med => !pharmMedIsCurrent(med))
+        .sort((a, b) => pharmMedEndTime(b) - pharmMedEndTime(a));
+    const prescriptions = (Array.isArray(p.prescriptions) ? [...p.prescriptions] : [])
+        .sort((a, b) => pharmRxTime(b) - pharmRxTime(a));
+
+    const setCount = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    setCount('pharm-current-count', current.length);
+    setCount('pharm-past-count', past.length);
+    setCount('pharm-rx-count', prescriptions.length);
+
+    const currentEl = document.getElementById(PHARM_TAB_PANELS.current);
+    const pastEl = document.getElementById(PHARM_TAB_PANELS.past);
+    const rxEl = document.getElementById(PHARM_TAB_PANELS.prescriptions);
+    const searchEl = document.getElementById('pharm-search-results');
+
+    if (currentEl) {
+        currentEl.innerHTML = current.length
+            ? current.map(med => renderPharmMedicationEntry(med, true)).join('')
+            : '<p class="pharm-empty">No current medications.</p>';
+    }
+    if (pastEl) {
+        pastEl.innerHTML = past.length
+            ? past.map(med => renderPharmMedicationEntry(med, false)).join('')
+            : '<p class="pharm-empty">No past medications yet. Completed courses will appear here.</p>';
+    }
+    if (rxEl) {
+        rxEl.innerHTML = prescriptions.length
+            ? prescriptions.map(renderPharmPrescriptionEntry).join('')
+            : '<p class="pharm-empty">No prescriptions recorded.</p>';
+    }
+
+    renderPharmacistWearable();
+
+    const searching = pharmSearchQuery.length > 0;
+    Object.entries(PHARM_TAB_PANELS).forEach(([tab, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden', searching || tab !== pharmActiveTab);
+    });
+
+    if (!searchEl) return;
+    searchEl.classList.toggle('hidden', !searching);
+    if (!searching) {
+        searchEl.innerHTML = '';
+        return;
+    }
+
+    const medMatches = meds.filter(med => pharmMatches(pharmSearchQuery, [
+        med.name, med.dosage, med.frequency, med.duration, med.notes, med.addedBy
+    ]));
+    const rxMatches = prescriptions.filter(rx => {
+        const medText = (Array.isArray(rx.medications) ? rx.medications : []).map(med =>
+            typeof med === 'string' ? med : [med.name, med.dosage, med.frequency, med.duration].join(' ')
+        ).join(' ');
+        return pharmMatches(pharmSearchQuery, [medText, rx.verifiedBy, rx.date, rx.doctor, rx.diagnosis]);
+    });
+
+    let html = '';
+    if (medMatches.length) {
+        html += `<h4 class="pharm-result-heading">Medications (${medMatches.length})</h4>`;
+        html += medMatches.map(med => renderPharmMedicationEntry(med, pharmMedIsCurrent(med))).join('');
+    }
+    if (rxMatches.length) {
+        html += `<h4 class="pharm-result-heading">Prescriptions (${rxMatches.length})</h4>`;
+        html += rxMatches.map(renderPharmPrescriptionEntry).join('');
+    }
+    searchEl.innerHTML = html || `<p class="pharm-empty">No results for “${pharmEsc(pharmSearchQuery)}”.</p>`;
+}
+
+function renderPharmacistHistory() {
+    const p = currentPharmPatient;
+    const history = document.getElementById('pharm-history');
+    if (!p || !history) return;
+
+    const items = (Array.isArray(p.history) ? [...p.history] : [])
+        .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
+        .slice(0, 25);
+
+    history.innerHTML = items.length ? items.map(h => `
+        <div class="pharm-entry">
+            <div class="pharm-entry-title">${pharmEsc(h.title || 'Activity')}</div>
+            <div class="pharm-entry-meta">
+                ${pharmEsc(h.details || '')}${h.date ? ` — ${pharmFormatDate(h.date)}` : ''}
+            </div>
+        </div>
+    `).join('') : '<p class="pharm-empty">No history recorded.</p>';
+}
+
+function setPharmacistMedicationModalMode(mode, med) {
+    const editing = mode === 'edit' && !!med;
+    editingPharmMedId = editing ? med.id : null;
+
+    const title = document.getElementById('pharm-add-med-title');
+    const submit = document.getElementById('pharm-add-med-submit');
+    if (title) title.textContent = editing ? 'Edit Medication' : 'Add Medication for Patient';
+    if (submit) submit.textContent = editing ? 'Save Changes' : 'Add Medication';
+
+    const form = document.querySelector('#pharm-add-med-modal form');
+    if (editing) {
+        document.getElementById('pharm-med-name').value = med.name || '';
+        document.getElementById('pharm-med-dosage').value = med.dosage || '';
+        document.getElementById('pharm-med-frequency').value = med.frequency || '';
+        document.getElementById('pharm-med-duration').value = med.duration || '';
+        document.getElementById('pharm-med-notes').value = med.notes || '';
+    } else if (form) {
+        form.reset();
+    }
+
+    openModal('pharm-add-med-modal');
+}
+
+function openPharmacistAddMedication() {
+    if (!currentPharmPatient) {
+        showToast('Load a patient first', 'error');
+        return;
+    }
+    if (typeof canManageMedications === 'function' && !canManageMedications()) {
+        showToast('Only a pharmacist can add medications', 'error');
+        return;
+    }
+    setPharmacistMedicationModalMode('add');
+}
+
+function openPharmacistEditMedication(medId) {
+    if (!currentPharmPatient) {
+        showToast('Load a patient first', 'error');
+        return;
+    }
+    if (typeof canManageMedications === 'function' && !canManageMedications()) {
+        showToast('Only a pharmacist can edit medications', 'error');
+        return;
+    }
+
+    const med = (currentPharmPatient.medications || []).find(m => m.id === medId);
+    if (!med) return;
+    if (!pharmMedIsCurrent(med)) {
+        showToast('Only current medications can be edited', 'error');
+        return;
+    }
+    setPharmacistMedicationModalMode('edit', med);
+}
+
+async function submitPharmacistAddMedication(event) {
+    event.preventDefault();
+
+    if (!currentPharmPatient) {
+        showToast('Load a patient first', 'error');
+        return;
+    }
+    if (typeof canManageMedications === 'function' && !canManageMedications()) {
+        showToast('Only a pharmacist can add medications', 'error');
+        return;
+    }
+
+    const name = document.getElementById('pharm-med-name')?.value.trim() || '';
+    const dosage = document.getElementById('pharm-med-dosage')?.value.trim() || '';
+    const frequency = document.getElementById('pharm-med-frequency')?.value.trim() || '';
+    const duration = document.getElementById('pharm-med-duration')?.value.trim() || '';
+    const notes = document.getElementById('pharm-med-notes')?.value.trim() || '';
+
+    if (!name || !dosage || !frequency) {
+        showToast('Please fill in the medicine name, dosage and frequency', 'error');
+        return;
+    }
+
+    const isEditing = !!editingPharmMedId;
+    const medId = isEditing ? editingPharmMedId : generateId();
+    const existing = isEditing
+        ? (currentPharmPatient.medications || []).find(m => m.id === medId)
+        : null;
+    if (isEditing && !existing) {
+        showToast('That medication no longer exists', 'error');
+        editingPharmMedId = null;
+        return;
+    }
+
+    const submitBtn = event.target.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+
+    const pharmacist = App.currentUser?.name || 'Pharmacist';
+    const uid = currentPharmPatient.uid;
+    const stamp = new Date().toISOString();
+
+    try {
+        if (isEditing) {
+            const updateData = {
+                name,
+                dosage,
+                frequency,
+                duration,
+                notes,
+                updatedAt: stamp,
+                updatedBy: pharmacist
+            };
+
+            // Recalculate the course end date when the duration changes.
+            if (duration !== (existing.duration || '')) {
+                const start = typeof getMedicationStartDate === 'function'
+                    ? getMedicationStartDate(existing)
+                    : null;
+                const days = typeof parseDurationDays === 'function'
+                    ? parseDurationDays(duration)
+                    : null;
+                updateData.endDate = start && days
+                    ? new Date(start.getTime() + days * 24 * 60 * 60 * 1000).toISOString()
+                    : null;
+            }
+
+            await db.collection('users').doc(uid)
+                .collection('medications').doc(medId)
+                .set(updateData, { merge: true });
+
+            const changes = [];
+            if ((existing.name || '') !== name) changes.push(`name → ${name}`);
+            if ((existing.dosage || '') !== dosage) changes.push(`dose ${existing.dosage || '—'} → ${dosage}`);
+            if ((existing.frequency || '') !== frequency) changes.push(`frequency ${existing.frequency || '—'} → ${frequency}`);
+            if ((existing.duration || '') !== duration) changes.push(`duration ${existing.duration || '—'} → ${duration || 'not set'}`);
+
+            const histId = generateId();
+            await db.collection('users').doc(uid).collection('history').doc(histId).set({
+                id: histId,
+                type: 'medication',
+                title: 'Medication Updated by Pharmacist',
+                details: `${name} updated by ${pharmacist}${changes.length ? ` (${changes.join(', ')})` : ''}`,
+                date: stamp
+            });
+
+            showToast(`${name} updated`);
+        } else {
+            await db.collection('users').doc(uid).collection('medications').doc(medId).set({
+                id: medId,
+                name,
+                dosage,
+                frequency,
+                duration,
+                notes,
+                startDate: stamp,
+                active: true,
+                warnings: [],
+                verified: true,
+                addedBy: pharmacist,
+                addedByRole: 'pharmacist'
+            });
+
+            const histId = generateId();
+            await db.collection('users').doc(uid).collection('history').doc(histId).set({
+                id: histId,
+                type: 'medication',
+                title: 'Medication Added by Pharmacist',
+                details: `${name} ${dosage} added manually by ${pharmacist}`,
+                date: stamp
+            });
+
+            showToast(`${name} added to ${currentPharmPatient.profile.name || 'patient'}`);
+        }
+
+        editingPharmMedId = null;
+        closeModal('pharm-add-med-modal');
+        await loadPatientByCode();
+    } catch (e) {
+        console.error('Medication save failed:', e);
+        showToast('Could not save medication: ' + (e.code || e.message), 'error');
+    } finally {
+        if (submitBtn) submitBtn.disabled = false;
+    }
+}
+
+async function removePharmacistMedication(medId) {
+    if (!currentPharmPatient) {
+        showToast('Load a patient first', 'error');
+        return;
+    }
+    if (typeof canManageMedications === 'function' && !canManageMedications()) {
+        showToast('Only a pharmacist can remove medications', 'error');
+        return;
+    }
+
+    const med = (currentPharmPatient.medications || []).find(m => m.id === medId);
+    if (!med) return;
+
+    const patientName = currentPharmPatient.profile.name || 'this patient';
+    if (!confirm(`Remove ${med.name} from ${patientName}?`)) return;
+
+    const uid = currentPharmPatient.uid;
+    const stamp = new Date().toISOString();
+    const pharmacist = App.currentUser?.name || 'Pharmacist';
+
+    try {
+        await db.collection('users').doc(uid).collection('medications').doc(medId).delete();
+
+        // Remove any dose reminders as well. This is best-effort so an
+        // unpublished reminder rule cannot block the medication removal.
+        const linkedReminders = (currentPharmPatient.reminders || [])
+            .filter(r => r.medicationId === medId);
+        await Promise.all(linkedReminders.map(r =>
+            db.collection('users').doc(uid).collection('reminders').doc(r.id).delete()
+                .catch(e => console.warn('Could not delete reminder:', e.code || e.message))
+        ));
+
+        const histId = generateId();
+        await db.collection('users').doc(uid).collection('history').doc(histId).set({
+            id: histId,
+            type: 'medication',
+            title: 'Medication Removed by Pharmacist',
+            details: `${med.name}${med.dosage ? ' ' + med.dosage : ''} removed by ${pharmacist}`,
+            date: stamp
+        });
+
+        showToast(`${med.name} removed from ${patientName}`);
+        await loadPatientByCode();
+    } catch (e) {
+        console.error('Medication removal failed:', e);
+        showToast('Could not remove medication: ' + (e.code || e.message), 'error');
+    }
 }
 
 const pharmEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -45,11 +641,13 @@ async function loadPatientByCode() {
             return;
         }
 
-        const [medsSnap, rxSnap, remSnap, histSnap] = await Promise.all([
+        const [medsSnap, rxSnap, remSnap, histSnap, wearableSnap] = await Promise.all([
             db.collection('users').doc(uid).collection('medications').get(),
             db.collection('users').doc(uid).collection('prescriptions').get(),
             db.collection('users').doc(uid).collection('reminders').get(),
-            db.collection('users').doc(uid).collection('history').get()
+            db.collection('users').doc(uid).collection('history').get(),
+            db.collection('users').doc(uid).collection('wearableRecords')
+                .orderBy('timestamp', 'desc').limit(50).get()
         ]);
         const toArr = (s) => s.docs.map(d => ({ id: d.id, ...d.data() }));
 
@@ -60,8 +658,17 @@ async function loadPatientByCode() {
             medications: toArr(medsSnap),
             prescriptions: toArr(rxSnap),
             reminders: toArr(remSnap),
-            history: toArr(histSnap)
+            history: toArr(histSnap),
+            wearableRecords: toArr(wearableSnap)
         };
+
+        pharmActiveTab = 'current';
+        pharmSearchQuery = '';
+        const search = document.getElementById('pharm-med-search');
+        if (search) search.value = '';
+        document.querySelectorAll('.pharm-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.pharmTab === 'current');
+        });
 
         renderPharmacistPatient();
         document.getElementById('pharm-patient-area').classList.remove('hidden');
@@ -79,39 +686,24 @@ function renderPharmacistPatient() {
     const p = currentPharmPatient;
     if (!p) return;
 
+    const meds = Array.isArray(p.medications) ? p.medications : [];
+    const current = meds.filter(pharmMedIsCurrent);
+    const past = meds.filter(med => !pharmMedIsCurrent(med));
+
     document.getElementById('pharm-patient-code').textContent = 'Code: ' + p.code;
     document.getElementById('pharm-patient-profile').innerHTML = `
         <div><strong>Name:</strong> ${pharmEsc(p.profile.name)}</div>
         <div><strong>Email:</strong> ${pharmEsc(p.profile.email)}</div>
         <div><strong>Phone:</strong> ${pharmEsc(p.profile.phone || '—')}</div>
         <div><strong>Date of Birth:</strong> ${pharmEsc(p.profile.dob || '—')}</div>
-        <div><strong>Medications:</strong> ${p.medications.length}</div>
-        <div><strong>Prescriptions:</strong> ${p.prescriptions.length}</div>
+        <div><strong>Medications:</strong> ${current.length} current · ${past.length} past</div>
+        <div><strong>Prescriptions:</strong> ${(p.prescriptions || []).length}</div>
+        <div><strong>Wearable readings:</strong> ${(p.wearableRecords || []).length}</div>
     `;
 
-    const meds = document.getElementById('pharm-medications');
-    meds.innerHTML = p.medications.length ? p.medications.map(m => `
-        <div style="padding:10px 0;border-bottom:1px solid var(--border-color,#eee);">
-            <strong>${pharmEsc(m.name)}</strong> ${pharmEsc(m.dosage || '')}
-            <div style="font-size:.85rem;color:var(--text-muted,#666);">
-                ${pharmEsc(m.frequency || '')} · ${pharmEsc(m.duration || '')}
-                ${m.verified ? ' · <span style="color:#059669;">Verified</span>' : ''}
-            </div>
-        </div>
-    `).join('') : '<p style="color:var(--text-muted,#666);">No medications yet.</p>';
-
-    const history = document.getElementById('pharm-history');
-    const items = [...p.history]
-        .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
-        .slice(0, 25);
-    history.innerHTML = items.length ? items.map(h => `
-        <div style="padding:10px 0;border-bottom:1px solid var(--border-color,#eee);">
-            <strong>${pharmEsc(h.title)}</strong>
-            <div style="font-size:.85rem;color:var(--text-muted,#666);">
-                ${pharmEsc(h.details || '')} — ${h.date ? new Date(h.date).toLocaleString() : ''}
-            </div>
-        </div>
-    `).join('') : '<p style="color:var(--text-muted,#666);">No history recorded.</p>';
+    renderPharmacistMedicationPanels();
+    renderPharmacistHistory();
+    resetPharmacistHistory();
 }
 
 async function scanPharmacistPrescription() {

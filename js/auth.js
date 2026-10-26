@@ -19,10 +19,14 @@ function setAuthRole(role) {
     const p = document.getElementById('role-btn-patient');
     const ph = document.getElementById('role-btn-pharmacist');
     const hint = document.getElementById('auth-role-hint');
-    const active = 'flex:1;padding:12px;border-radius:10px;border:2px solid var(--primary,#4f46e5);background:var(--primary,#4f46e5);color:#fff;font-weight:600;cursor:pointer;transition:.2s;';
-    const idle = 'flex:1;padding:12px;border-radius:10px;border:2px solid var(--border-color,#d0d7de);background:transparent;color:var(--text-primary,#111);font-weight:600;cursor:pointer;transition:.2s;';
-    if (p) p.setAttribute('style', authRole === 'patient' ? active : idle);
-    if (ph) ph.setAttribute('style', authRole === 'pharmacist' ? active : idle);
+    if (p) {
+        p.classList.toggle('active', authRole === 'patient');
+        p.setAttribute('aria-pressed', authRole === 'patient' ? 'true' : 'false');
+    }
+    if (ph) {
+        ph.classList.toggle('active', authRole === 'pharmacist');
+        ph.setAttribute('aria-pressed', authRole === 'pharmacist' ? 'true' : 'false');
+    }
     if (hint) hint.innerHTML = `Signing in as a <strong>${authRole === 'pharmacist' ? 'Pharmacist' : 'Patient'}</strong>`;
 }
 

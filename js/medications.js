@@ -1,23 +1,159 @@
 // ===== Medication Management Module =====
 
+// ===== Medication lifecycle =====
+// A course lasts as long as its duration says: "5 days", "2 weeks",
+// "1 month", or a bare number (the patient form stores days). "Ongoing",
+// "Not specified" and blank durations never expire.
+
+function parseDurationDays(duration) {
+    if (duration == null) return null;
+    const text = String(duration).trim().toLowerCase();
+    if (!text) return null;
+    if (/\b(ongoing|continuous|indefinite|long[- ]?term|chronic|not specified|n\/a)\b/.test(text)) {
+        return null;
+    }
+
+    const match = text.match(/(\d+(?:\.\d+)?)\s*(days|day|weeks|week|months|month|years|year|mo|d|w|y)\b/);
+    if (!match) {
+        // The patient form stores bare numbers of days ("30", "90").
+        if (/^\d+(?:\.\d+)?$/.test(text)) {
+            const bare = parseFloat(text);
+            return Number.isFinite(bare) && bare > 0 ? bare : null;
+        }
+        return null;
+    }
+
+    const amount = parseFloat(match[1]);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+
+    const unit = match[2];
+    if (unit === 'day' || unit === 'days' || unit === 'd') return amount;
+    if (unit === 'week' || unit === 'weeks' || unit === 'w') return amount * 7;
+    if (unit === 'month' || unit === 'months' || unit === 'mo') return amount * 30;
+    if (unit === 'year' || unit === 'years' || unit === 'y') return amount * 365;
+    return null;
+}
+
+function getMedicationStartDate(med) {
+    if (!med) return null;
+    const raw = med.startDate || med.createdAt;
+    if (raw instanceof Date) return isNaN(raw.getTime()) ? null : raw;
+    if (typeof raw === 'string' || typeof raw === 'number') {
+        const date = new Date(raw);
+        return isNaN(date.getTime()) ? null : date;
+    }
+    // Firestore timestamps arrive as Timestamp instances or
+    // {seconds, nanoseconds} objects.
+    if (raw && typeof raw.toDate === 'function') return raw.toDate();
+    if (raw && typeof raw === 'object' && 'seconds' in raw) {
+        return new Date(raw.seconds * 1000);
+    }
+    return null;
+}
+
+function getMedicationEndDate(med) {
+    if (!med) return null;
+    if (med.endDate) {
+        const stored = new Date(med.endDate);
+        if (!isNaN(stored.getTime())) return stored;
+    }
+    const days = parseDurationDays(med.duration);
+    if (days === null) return null;
+    const start = getMedicationStartDate(med);
+    if (!start) return null;
+    return new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+// Archived (active === false) medication courses are always "past".
+function isMedicationExpired(med, now = Date.now()) {
+    if (!med) return false;
+    if (med.active === false) return true;
+    const end = getMedicationEndDate(med);
+    return !!end && now >= end.getTime();
+}
+
+function isMedicationCurrent(med, now = Date.now()) {
+    return !!med && med.active !== false && !isMedicationExpired(med, now);
+}
+
+function getCurrentMedications() {
+    return (App.medications || []).filter(med => isMedicationCurrent(med));
+}
+
+function getPastMedications() {
+    return (App.medications || []).filter(med => !isMedicationCurrent(med));
+}
+
+// Called on login and by the expiry watcher. Moves finished courses out of
+// the current list, deletes their reminders, and records the completion in
+// history so it is not lost.
+function archiveExpiredMedications(options = {}) {
+    if (!App || !Array.isArray(App.medications)) return false;
+    const now = Date.now();
+    const expired = [];
+
+    App.medications.forEach(med => {
+        if (med.active === false) return;
+        if (!isMedicationExpired(med, now)) return;
+        const end = getMedicationEndDate(med);
+        med.active = false;
+        med.endedAt = (end || new Date(now)).toISOString();
+        if (end) med.endDate = end.toISOString();
+        expired.push(med);
+    });
+
+    // Also sweep reminders left behind by a partially-saved archive from a
+    // previous session, even when nothing expired this time.
+    const inactiveIds = new Set(
+        App.medications
+            .filter(med => !isMedicationCurrent(med, now))
+            .map(med => med.id)
+    );
+    const staleReminderCount = (App.reminders || [])
+        .filter(r => inactiveIds.has(r.medicationId))
+        .length;
+
+    if (expired.length === 0 && staleReminderCount === 0) return false;
+
+    App.reminders = (App.reminders || []).filter(r => !inactiveIds.has(r.medicationId));
+
+    expired.forEach(med => {
+        const duration = med.duration || 'the prescribed course';
+        App.addHistory(
+            'medication',
+            'Medication Course Completed',
+            `${med.name}${med.dosage ? ' ' + med.dosage : ''} finished after ${duration}`
+        );
+    });
+
+    App.saveData();
+    if (expired.length > 0 && options.notify !== false && typeof showToast === 'function') {
+        showToast(`${expired.length} medication course${expired.length === 1 ? '' : 's'} completed and moved to history`, 'warning');
+    }
+    if (staleReminderCount > 0 && typeof syncPushSchedule === 'function') {
+        try { syncPushSchedule(); } catch (e) { /* push sync is best-effort */ }
+    }
+    return true;
+}
+
 function renderMedications() {
     const container = document.getElementById('medications-container');
+    const currentMeds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(med => med.active !== false);
 
-    if (App.medications.length === 0) {
+    if (currentMeds.length === 0) {
         container.innerHTML = `
             <div class="empty-state-card">
                 <i class="fas fa-pills"></i>
-                <h3>No Medications Yet</h3>
-                <p>Add your medications or upload a prescription to get started</p>
-                <button class="btn-primary" onclick="navigateTo('upload')">
-                    <i class="fas fa-cloud-upload-alt"></i> Upload Prescription
-                </button>
+                <h3>No Current Medications</h3>
+                <p>Ask your pharmacist to scan and add a prescription for you.</p>
             </div>
         `;
         return;
     }
 
-    container.innerHTML = App.medications.map(med => {
+    container.innerHTML = currentMeds.map(med => {
         const today = new Date().toISOString().split('T')[0];
         const reminder = App.reminders.find(r => r.medicationId === med.id);
         const taken = reminder?.takenDates?.includes(today);
@@ -63,21 +199,31 @@ function renderMedications() {
                 <div class="med-actions">
                     ${takeAction}
                     ${refill && refill.tracked ? `<button class="btn-delete" onclick="openRefillModal('${med.id}')"><i class="fas fa-plus"></i> Refill</button>` : ''}
-                    <button class="btn-delete" onclick="removeMedication('${med.id}')">
-                        <i class="fas fa-trash"></i> Remove
-                    </button>
                 </div>
             </div>
         `;
     }).join('');
 }
 
+function canManageMedications() {
+    return App.currentUser?.role === 'pharmacist';
+}
+
 function showAddMedicationModal() {
+    if (!canManageMedications()) {
+        showToast('Only a pharmacist can add medications', 'error');
+        return;
+    }
     document.getElementById('add-medication-modal').classList.remove('hidden');
 }
 
 function addMedication(e) {
     e.preventDefault();
+
+    if (!canManageMedications()) {
+        showToast('Only a pharmacist can add medications', 'error');
+        return;
+    }
 
     const name = document.getElementById('med-name').value;
     const dosage = document.getElementById('med-dosage').value;
@@ -215,6 +361,10 @@ function takeMedication(medId) {
 }
 
 function removeMedication(medId) {
+    if (!canManageMedications()) {
+        showToast('Only a pharmacist can remove medications', 'error');
+        return;
+    }
     if (!confirm('Are you sure you want to remove this medication?')) return;
 
     const med = App.medications.find(m => m.id === medId);

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mediassist-v4';
+const CACHE_NAME = 'mediassist-v9';
 const ASSETS_TO_CACHE = [
     '/',
     '/index.html',

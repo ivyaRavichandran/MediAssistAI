@@ -187,12 +187,15 @@ function updateInteractionDrugsList() {
     const container = document.getElementById('interaction-drugs-list');
     if (!container) return;
 
-    if (App.medications.length === 0) {
+    const meds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(med => med.active !== false);
+    if (meds.length === 0) {
         container.innerHTML = '<p style="color: var(--text-muted); font-size: 0.9rem;">No medications added yet. Add medications first or enter drugs manually below.</p>';
         return;
     }
 
-    container.innerHTML = App.medications.map(med => `
+    container.innerHTML = meds.map(med => `
         <div class="drug-chip">
             <span>${med.name}</span>
             <span class="remove-drug" onclick="removeInteractionDrug(this, '${med.name}')">&times;</span>

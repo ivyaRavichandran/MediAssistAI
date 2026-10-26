@@ -38,17 +38,19 @@
             </div>
 
             <!-- Role selector: two separate logins (patient / pharmacist) -->
-            <div class="role-toggle" style="display:flex;gap:8px;margin-bottom:18px;">
-                <button type="button" id="role-btn-patient" onclick="setAuthRole('patient')"
-                        style="flex:1;padding:12px;border-radius:10px;border:2px solid var(--primary,#4f46e5);background:var(--primary,#4f46e5);color:#fff;font-weight:600;cursor:pointer;transition:.2s;">
-                    <i class="fas fa-user"></i> Patient
+            <div class="role-toggle" role="group" aria-label="Choose account type">
+                <button type="button" id="role-btn-patient" class="role-toggle-btn active"
+                        aria-pressed="true" onclick="setAuthRole('patient')">
+                    <i class="fas fa-user"></i>
+                    <span class="role-toggle-label">Patient</span>
                 </button>
-                <button type="button" id="role-btn-pharmacist" onclick="setAuthRole('pharmacist')"
-                        style="flex:1;padding:12px;border-radius:10px;border:2px solid var(--border-color,#d0d7de);background:transparent;color:var(--text-primary,#111);font-weight:600;cursor:pointer;transition:.2s;">
-                    <i class="fas fa-user-md"></i> Pharmacist
+                <button type="button" id="role-btn-pharmacist" class="role-toggle-btn"
+                        aria-pressed="false" onclick="setAuthRole('pharmacist')">
+                    <i class="fas fa-user-md"></i>
+                    <span class="role-toggle-label">Pharmacist</span>
                 </button>
             </div>
-            <p id="auth-role-hint" style="text-align:center;font-size:.85rem;color:var(--text-muted,#666);margin:-8px 0 16px;">
+            <p id="auth-role-hint" class="auth-role-hint">
                 Signing in as a <strong>Patient</strong>
             </p>
 
@@ -119,9 +121,6 @@
             <nav class="sidebar-nav">
                 <a href="#" class="nav-item active" data-page="dashboard" onclick="navigateTo('dashboard')">
                     <i class="fas fa-home"></i><span>Dashboard</span>
-                </a>
-                <a href="#" class="nav-item" data-page="upload" onclick="navigateTo('upload')">
-                    <i class="fas fa-cloud-upload-alt"></i><span>Upload Prescription</span>
                 </a>
                 <a href="#" class="nav-item" data-page="medications" onclick="navigateTo('medications')">
                     <i class="fas fa-pills"></i><span>My Medications</span>
@@ -214,7 +213,7 @@
                             <p>Today's Reminders</p>
                         </div>
                     </div>
-                    <div class="stat-card" onclick="navigateTo('upload')">
+                    <div class="stat-card" onclick="navigateTo('history')">
                         <div class="stat-icon" style="background: rgba(245, 158, 11, 0.14);">
                             <i class="fas fa-file-medical" style="color: #d97706;"></i>
                         </div>
@@ -259,7 +258,7 @@
                             <h2><i class="fas fa-file-medical"></i> Recent Prescriptions</h2>
                         </div>
                         <div id="dashboard-prescriptions" class="card-body">
-                            <p class="empty-state">No prescriptions uploaded</p>
+                            <p class="empty-state">No prescriptions added yet</p>
                         </div>
                     </div>
 
@@ -268,9 +267,9 @@
                             <h2><i class="fas fa-bolt"></i> Quick Actions</h2>
                         </div>
                         <div class="card-body">
-                            <button class="action-btn" onclick="navigateTo('upload')">
-                                <i class="fas fa-camera"></i>
-                                <span>Scan Prescription</span>
+                            <button class="action-btn" onclick="navigateTo('history')">
+                                <i class="fas fa-file-medical"></i>
+                                <span>View Prescriptions</span>
                             </button>
                             <button class="action-btn" onclick="navigateTo('medicine-info')">
                                 <i class="fas fa-search"></i>
@@ -435,20 +434,11 @@
                     <p>Manage your current medications and track adherence</p>
                 </div>
 
-                <div class="medications-header">
-                    <button class="btn-primary" onclick="showAddMedicationModal()">
-                        <i class="fas fa-plus"></i> Add Medication
-                    </button>
-                </div>
-
                 <div id="medications-container" class="medications-grid">
                     <div class="empty-state-card">
                         <i class="fas fa-pills"></i>
-                        <h3>No Medications Yet</h3>
-                        <p>Add your medications or upload a prescription to get started</p>
-                        <button class="btn-primary" onclick="navigateTo('upload')">
-                            <i class="fas fa-cloud-upload-alt"></i> Upload Prescription
-                        </button>
+                        <h3>No Current Medications</h3>
+                        <p>Ask your pharmacist to scan and add a prescription for you.</p>
                     </div>
                 </div>
             </section>
@@ -841,16 +831,6 @@
                     </div>
                 </div>
 
-                <!-- Google Drive Sync -->
-                <div class="wl-card">
-                    <div class="card-header">
-                        <h2><i class="fab fa-google-drive"></i> Google Drive Sync</h2>
-                    </div>
-                    <div class="card-body">
-                        <p id="drive-status-line" class="empty-state" style="margin-bottom: 0.75rem;">Checking connection...</p>
-                        <div id="drive-latest" style="margin-top: 0.5rem; font-size: 0.9em; line-height: 1.6;"></div>
-                    </div>
-                </div>
             </section>
 
             <!-- History Page -->
@@ -906,17 +886,48 @@
                     </div>
 
                     <div class="card" style="margin-bottom:20px;">
-                        <div class="card-header">
-                            <h2><i class="fas fa-pills"></i> Current Medications</h2>
+                        <div class="card-header pharm-med-header">
+                            <h2><i class="fas fa-pills"></i> Medications</h2>
+                            <div class="pharm-med-search">
+                                <i class="fas fa-search"></i>
+                                <input type="search" id="pharm-med-search" placeholder="Search medicines or prescriptions..."
+                                       oninput="applyPharmacistSearch(this.value)">
+                            </div>
+                            <button class="btn-primary btn-sm" onclick="openPharmacistAddMedication()">
+                                <i class="fas fa-plus"></i> Add Medication
+                            </button>
                         </div>
-                        <div class="card-body" id="pharm-medications"></div>
+                        <div class="card-body">
+                            <div class="pharm-tabs" role="tablist">
+                                <button type="button" class="pharm-tab active" data-pharm-tab="current" onclick="setPharmacistTab('current')">
+                                    Current Medications <span class="pharm-tab-count" id="pharm-current-count">0</span>
+                                </button>
+                                <button type="button" class="pharm-tab" data-pharm-tab="past" onclick="setPharmacistTab('past')">
+                                    Past Medications <span class="pharm-tab-count" id="pharm-past-count">0</span>
+                                </button>
+                                <button type="button" class="pharm-tab" data-pharm-tab="prescriptions" onclick="setPharmacistTab('prescriptions')">
+                                    Past Prescriptions <span class="pharm-tab-count" id="pharm-rx-count">0</span>
+                                </button>
+                                <button type="button" class="pharm-tab" data-pharm-tab="wearable" onclick="setPharmacistTab('wearable')">
+                                    Wearable Records <span class="pharm-tab-count" id="pharm-wearable-count">0</span>
+                                </button>
+                            </div>
+                            <div id="pharm-search-results" class="pharm-tab-panel hidden"></div>
+                            <div id="pharm-current-medications" class="pharm-tab-panel"></div>
+                            <div id="pharm-past-medications" class="pharm-tab-panel hidden"></div>
+                            <div id="pharm-prescriptions" class="pharm-tab-panel hidden"></div>
+                            <div id="pharm-wearable" class="pharm-tab-panel hidden"></div>
+                        </div>
                     </div>
 
                     <div class="card" style="margin-bottom:20px;">
-                        <div class="card-header">
+                        <div class="card-header pharm-history-header" onclick="togglePharmacistHistory()"
+                             role="button" tabindex="0"
+                             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();togglePharmacistHistory();}">
                             <h2><i class="fas fa-history"></i> Patient History</h2>
+                            <i id="pharm-history-chevron" class="fas fa-chevron-down"></i>
                         </div>
-                        <div class="card-body" id="pharm-history"></div>
+                        <div class="card-body hidden" id="pharm-history"></div>
                     </div>
 
                     <div class="card">
@@ -1012,6 +1023,46 @@
                 <div class="modal-footer">
                     <button type="button" class="btn-secondary" onclick="closeModal('add-medication-modal')">Cancel</button>
                     <button type="submit" class="btn-primary">Add Medication</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Pharmacist Add Medication Modal -->
+    <div id="pharm-add-med-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="pharm-add-med-title">Add Medication for Patient</h2>
+                <button class="btn-icon" onclick="closeModal('pharm-add-med-modal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <form onsubmit="submitPharmacistAddMedication(event)">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Medicine Name *</label>
+                        <input type="text" id="pharm-med-name" required placeholder="e.g., Paracetamol">
+                    </div>
+                    <div class="form-group">
+                        <label>Dosage *</label>
+                        <input type="text" id="pharm-med-dosage" required placeholder="e.g., 500mg">
+                    </div>
+                    <div class="form-group">
+                        <label>Frequency *</label>
+                        <input type="text" id="pharm-med-frequency" required placeholder="e.g., Twice Daily">
+                    </div>
+                    <div class="form-group">
+                        <label>Duration</label>
+                        <input type="text" id="pharm-med-duration" placeholder="e.g., 7 days or Ongoing">
+                    </div>
+                    <div class="form-group">
+                        <label>Instructions / Notes</label>
+                        <textarea id="pharm-med-notes" placeholder="e.g., Take after food"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary" onclick="closeModal('pharm-add-med-modal')">Cancel</button>
+                    <button type="submit" class="btn-primary" id="pharm-add-med-submit">Add Medication</button>
                 </div>
             </form>
         </div>
@@ -1237,7 +1288,6 @@
     <script src="js/medicine-info.js"></script>
     <script src="js/wearable.js"></script>
     <script src="js/push.js"></script>
-    <script src="js/drive.js"></script>
 
     <!-- Service Worker Registration -->
     <script>

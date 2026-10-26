@@ -60,11 +60,7 @@ const WearableSimulator = {
         weight: 70
     },
 
-    syncReal: {
-        byDate: {},
-        lastSync: null,
-        loading: false
-    },
+    lastRecordAt: 0,
 
     profiles: {
         normal: {
@@ -121,33 +117,6 @@ const WearableSimulator = {
         this.seedInitialHistory();
         this.generateSleepStages();
         this.loadEmergencyContactsFromFirestore();
-        this.loadSyncedData();
-    },
-
-    // ===== real watch data from Google Drive sync =====
-    async loadSyncedData() {
-        if (this.syncReal.loading) return;
-        this.syncReal.loading = true;
-        try {
-            const res = await fetch('/api/drive/data');
-            const data = await res.json();
-            const byDate = {};
-            (data.days || []).forEach(d => { byDate[d.date] = d; });
-            this.syncReal.byDate = byDate;
-            this.syncReal.lastSync = data.lastSync || null;
-        } catch (e) {
-            console.warn('wearable: could not load Drive data, using generated readings:', e);
-        } finally {
-            this.syncReal.loading = false;
-        }
-    },
-
-    getSyncedToday() {
-        const today = new Date().toISOString().split('T')[0];
-        if (this.syncReal.byDate[today]) return this.syncReal.byDate[today];
-        const dates = Object.keys(this.syncReal.byDate).sort();
-        if (!dates.length) return null;
-        return this.syncReal.byDate[dates[dates.length - 1]];
     },
 
     seedInitialHistory() {
@@ -229,19 +198,10 @@ const WearableSimulator = {
         const noise = () => (Math.random() - 0.5) * 2;
         const smoothNoise = (prev, target, factor) => prev + (target - prev) * factor + noise() * (1 - factor) * 0.3;
 
-        // Real watch readings from Google Drive anchor these metrics; the rest
-        // continue to track naturally between syncs.
-        const synced = this.getSyncedToday();
+        if (!this.state.weight) this.state.weight = this.config.user.weight;
 
-        if (synced && synced.steps && this.state.totalStepsToday < synced.steps) {
-            this.state.totalStepsToday = Math.round(synced.steps);
-            this.state.steps = Math.round(synced.steps);
-        }
-        if (synced && synced.weightKg) this.state.weight = synced.weightKg;
-        else if (!this.state.weight) this.state.weight = this.config.user.weight;
-
-        const baseHR = synced && synced.heartRateAvg ? synced.heartRateAvg : p.hrBase;
-        const hrTarget = baseHR + circadian.hr * (synced && synced.heartRateAvg ? p.hrVar * 0.4 : p.hrVar) + activity.hrMod + noise() * 3;
+        const baseHR = p.hrBase;
+        const hrTarget = baseHR + circadian.hr * p.hrVar + activity.hrMod + noise() * 3;
         this.state.heartRate = Math.max(40, Math.min(200, Math.round(smoothNoise(this.state.heartRate, hrTarget, 0.3))));
         this.state.heartRateHistory.push({
             value: this.state.heartRate,
@@ -259,10 +219,9 @@ const WearableSimulator = {
         });
         if (this.state.spO2History.length > this.historyLength) this.state.spO2History.shift();
 
-        const syncedBP = synced && synced.bloodPressure && synced.bloodPressure.sys && synced.bloodPressure.dia;
-        const sysBase = syncedBP ? synced.bloodPressure.sys : p.sysBase;
-        const diaBase = syncedBP ? synced.bloodPressure.dia : p.diaBase;
-        const bpSwing = syncedBP ? 2 : p.bpVar;
+        const sysBase = p.sysBase;
+        const diaBase = p.diaBase;
+        const bpSwing = p.bpVar;
         const sysTarget = sysBase + circadian.bp * bpSwing + activity.stressMod * 0.2 + noise() * 2;
         const diaTarget = diaBase + circadian.bp * bpSwing * 0.6 + activity.stressMod * 0.1 + noise() * 1.5;
         this.state.bloodPressure = {
@@ -312,6 +271,7 @@ const WearableSimulator = {
         this.checkEmergencies();
         this.updateUI();
         this.saveWearableData();
+        this.recordWearableReading();
     },
 
     evolveActivity() {
@@ -683,6 +643,43 @@ const WearableSimulator = {
             totalStepsToday: this.state.totalStepsToday,
             lastDate: new Date().toISOString().split('T')[0]
         }));
+    },
+
+    // Persist one reading per minute so a pharmacist can review the patient's
+    // monitor history. Pharmacists never record their own simulated readings.
+    recordWearableReading() {
+        if (typeof App === 'undefined' || App.currentUser?.role !== 'patient') return;
+        if (typeof FB === 'undefined' || !FB.userId || !FB.userId()) return;
+        if (typeof db === 'undefined') return;
+
+        const now = Date.now();
+        if (now - this.lastRecordAt < 60000) return;
+        this.lastRecordAt = now;
+
+        const minuteId = String(Math.floor(now / 60000));
+        const record = {
+            timestamp: now,
+            recordedAt: new Date(now).toISOString(),
+            heartRate: this.state.heartRate,
+            spO2: this.state.spO2,
+            bloodPressure: { ...this.state.bloodPressure },
+            temperature: this.state.temperature,
+            stressLevel: this.state.stressLevel,
+            respiratoryRate: this.state.respiratoryRate,
+            steps: this.state.totalStepsToday,
+            caloriesBurned: this.state.caloriesBurned,
+            distanceKm: this.state.distanceKm,
+            activeMinutes: this.state.activeMinutes,
+            sleepHours: this.state.sleepHours,
+            sleepQuality: this.state.sleepQuality,
+            currentActivity: this.state.currentActivity,
+            healthScore: this.getHealthScore()
+        };
+
+        db.collection('users').doc(FB.userId())
+            .collection('wearableRecords').doc(minuteId)
+            .set(record, { merge: true })
+            .catch(e => console.warn('Could not record wearable reading:', e.code || e.message));
     },
 
     updateUI() {
@@ -1151,12 +1148,4 @@ function initWearablePage() {
     }
     WearableSimulator.updateUI();
     WearableSimulator.updateSleepStagesDisplay();
-}
-
-// Called after a Drive sync completes so real readings flow into the feed.
-function refreshWearableSync() {
-    if (typeof WearableSimulator === 'undefined') return;
-    WearableSimulator.loadSyncedData().then(() => {
-        WearableSimulator.updateUI();
-    });
 }

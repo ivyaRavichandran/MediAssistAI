@@ -71,13 +71,25 @@ const PushManager = {
     // change so a new dose time is scheduled without re-subscribing.
     async syncSchedule() {
         if (!this.endpoint || typeof App === 'undefined') return;
-        const reminders = (App.reminders || []).map(r => ({
-            id: r.id,
-            time: r.time,
-            repeat: r.repeat,
-            days: r.days || [],
-            active: r.active !== false
-        }));
+        const currentIds = typeof getCurrentMedications === 'function'
+            ? new Set(getCurrentMedications().map(med => med.id))
+            : null;
+        const endDates = new Map();
+        (App.medications || []).forEach(med => {
+            if (typeof getMedicationEndDate !== 'function') return;
+            const end = getMedicationEndDate(med);
+            if (end) endDates.set(med.id, end.toISOString());
+        });
+        const reminders = (App.reminders || [])
+            .filter(r => !currentIds || currentIds.has(r.medicationId))
+            .map(r => ({
+                id: r.id,
+                time: r.time,
+                repeat: r.repeat,
+                days: r.days || [],
+                active: r.active !== false,
+                endDate: endDates.get(r.medicationId) || null
+            }));
 
         try {
             const res = await fetch('/api/push/schedule', {

@@ -113,6 +113,12 @@ async function runPushScheduler() {
         for (const r of rec.reminders || []) {
             if (r.active === false) continue;
 
+            // A finished medication course must not keep pushing doses.
+            if (r.endDate) {
+                const courseEnd = new Date(r.endDate);
+                if (!isNaN(courseEnd.getTime()) && now >= courseEnd) continue;
+            }
+
             if (r.repeat === 'weekdays' && (now.getDay() === 0 || now.getDay() === 6)) continue;
             if (r.repeat === 'specific' && Array.isArray(r.days) && !r.days.includes(todayName)) continue;
 

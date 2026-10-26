@@ -31,12 +31,39 @@ service cloud.firestore {
       allow get: if isSelf(uid) || isPharmacist();
       allow create, update, delete: if isSelf(uid);
 
-      // Patients own their records. Pharmacists may read them and may only
-      // write the three collections the pharmacy dashboard needs.
-      match /{subcollection}/{docId} {
+      // Patients can read and manage their existing records, but they can
+      // never create new medications or prescriptions - only a pharmacist may
+      // add those. Patients still need update/delete for refill stock,
+      // automatic course expiry, and removing a medicine.
+      match /medications/{medId} {
         allow read: if isSelf(uid) || isPharmacist();
-        allow write: if isSelf(uid) ||
-          (isPharmacist() && subcollection in ['medications', 'prescriptions', 'history']);
+        allow create: if isPharmacist();
+        allow update, delete: if isSelf(uid) || isPharmacist();
+      }
+
+      match /prescriptions/{rxId} {
+        allow read: if isSelf(uid) || isPharmacist();
+        allow create: if isPharmacist();
+        allow update, delete: if isSelf(uid) || isPharmacist();
+      }
+
+      match /history/{entryId} {
+        allow read, write: if isSelf(uid) || isPharmacist();
+      }
+
+      match /reminders/{reminderId} {
+        allow read: if isSelf(uid) || isPharmacist();
+        allow write: if isSelf(uid) || isPharmacist();
+      }
+
+      match /wearableRecords/{recordId} {
+        allow read: if isSelf(uid) || isPharmacist();
+        allow write: if isSelf(uid);
+      }
+
+      match /emergencyContacts/{contactId} {
+        allow read: if isSelf(uid) || isPharmacist();
+        allow write: if isSelf(uid);
       }
     }
   }

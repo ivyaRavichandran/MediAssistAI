@@ -68,8 +68,10 @@ function getRefillStatus(med) {
 // All medications that need attention, most urgent first
 function getRefillAlerts() {
     const order = { out: 0, critical: 1, low: 2 };
-    return App.medications
-        .filter(m => m.active !== false)
+    const meds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(m => m.active !== false);
+    return meds
         .map(med => ({ med, status: getRefillStatus(med) }))
         .filter(x => x.status.tracked && x.status.level !== 'ok' && x.status.level !== 'untracked')
         .sort((a, b) => {
@@ -90,8 +92,11 @@ function renderRefillPage() {
     const container = document.getElementById('refill-list');
     if (!container) return;
 
-    const tracked = App.medications.filter(m => getRefillStatus(m).tracked);
-    const untracked = App.medications.filter(m => !getRefillStatus(m).tracked);
+    const meds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(m => m.active !== false);
+    const tracked = meds.filter(m => getRefillStatus(m).tracked);
+    const untracked = meds.filter(m => !getRefillStatus(m).tracked);
     const alerts = getRefillAlerts();
 
     // Summary counters
@@ -102,7 +107,7 @@ function renderRefillPage() {
     setText('refill-tracked-count', tracked.length);
     setText('refill-untracked-count', untracked.length);
 
-    if (App.medications.length === 0) {
+    if (meds.length === 0) {
         container.innerHTML = `
             <div class="empty-state-card">
                 <i class="fas fa-box-open"></i>
@@ -323,14 +328,17 @@ function updateStock(medId, newStock) {
 
 function refillModalOptions(selectEl, selectedId) {
     if (!selectEl) return;
-    if (App.medications.length === 0) {
+    const meds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(med => med.active !== false);
+    if (meds.length === 0) {
         selectEl.innerHTML = '<option value="">No medications available</option>';
         selectEl.disabled = true;
         return;
     }
     selectEl.disabled = false;
     selectEl.innerHTML = '<option value="">Select medication</option>' +
-        App.medications.map(med => {
+        meds.map(med => {
             const stock = Number.isFinite(med.stock) ? med.stock : 'n/a';
             return `<option value="${med.id}" ${med.id === selectedId ? 'selected' : ''}>${escapeHtml(med.name)} (${escapeHtml(med.dosage || '')}) - stock: ${stock}</option>`;
         }).join('');

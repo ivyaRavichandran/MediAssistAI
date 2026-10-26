@@ -858,14 +858,23 @@ function normalizeMedName(name) {
         .trim();
 }
 
-// True if this medicine is already on the patient's list (active or not).
+// True if this medicine is already on the patient's *current* list. A past
+// course should not block starting the same medicine again.
 function isMedicineAlreadyTaken(name) {
     const key = normalizeMedName(name);
     if (!key) return false;
-    return App.medications.some(m => normalizeMedName(m.name) === key);
+    const meds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(m => m.active !== false);
+    return meds.some(m => normalizeMedName(m.name) === key);
 }
 
 function addToMedications() {
+    if (typeof canManageMedications === 'function' && !canManageMedications()) {
+        showToast('Only a pharmacist can add medications', 'error');
+        return;
+    }
+
     const results = window.currentPrescriptionResults;
     if (!results) return;
 

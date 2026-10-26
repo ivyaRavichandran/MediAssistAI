@@ -63,6 +63,8 @@ function checkReminders() {
 
         const med = App.medications.find(m => m.id === reminder.medicationId);
         if (!med) return;
+        // A finished course should never fire another dose.
+        if (typeof isMedicationCurrent === 'function' && !isMedicationCurrent(med)) return;
 
         // Only fire while the dose window is open, and only once per day.
         if (!isDoseActionAllowed(reminder)) return;
@@ -181,13 +183,18 @@ function renderTodaySchedule() {
 
 function renderAllReminders() {
     const container = document.getElementById('all-reminders');
+    const currentMeds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications;
+    const currentIds = new Set(currentMeds.map(m => m.id));
+    const reminders = App.reminders.filter(r => currentIds.has(r.medicationId));
 
-    if (App.reminders.length === 0) {
+    if (reminders.length === 0) {
         container.innerHTML = '<p class="empty-state">No reminders configured</p>';
         return;
     }
 
-    container.innerHTML = App.reminders.map(r => {
+    container.innerHTML = reminders.map(r => {
         const med = App.medications.find(m => m.id === r.medicationId);
         return `
             <div class="schedule-item">
@@ -208,8 +215,12 @@ function populateReminderMedicationSelect() {
     const select = document.getElementById('reminder-medication');
     if (!select) return;
 
+    const currentMeds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(med => med.active !== false);
+
     select.innerHTML = '<option value="">Select medication</option>' +
-        App.medications.map(med => `<option value="${med.id}">${med.name} ${med.dosage}</option>`).join('');
+        currentMeds.map(med => `<option value="${med.id}">${med.name} ${med.dosage}</option>`).join('');
 }
 
 // Two reminders for the same medicine at the same time fire two notifications
@@ -231,7 +242,10 @@ function hasIdenticalReminder(candidate) {
 }
 
 function showAddReminderModal() {
-    if (App.medications.length === 0) {
+    const currentMeds = typeof getCurrentMedications === 'function'
+        ? getCurrentMedications()
+        : App.medications.filter(med => med.active !== false);
+    if (currentMeds.length === 0) {
         showToast('Please add a medication first', 'warning');
         return;
     }
