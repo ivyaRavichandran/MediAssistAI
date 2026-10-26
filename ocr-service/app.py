@@ -31,7 +31,6 @@ import ocr_engine
 HOST = os.environ.get("OCR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OCR_PORT", "5001"))
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "pdf"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("mediassist-ocr")
@@ -53,7 +52,9 @@ def health():
         "tesseract_path": info.get("path"),
         "tesseract_available": True,
         "languages": info.get("languages", []),
-        "preprocessing": ["grayscale", "sharpen", "upscale", "contrast", "binarise"]
+        "preprocessing": ["grayscale", "sharpen", "upscale", "contrast", "binarise"],
+        "pdf_support": bool(ocr_engine.PDFTOPPM_CMD),
+        "pdftoppm_path": ocr_engine.PDFTOPPM_CMD
     })
 
 
@@ -76,15 +77,11 @@ def process():
     if not data:
         return jsonify({"success": False, "error": "File is empty", "code": "EMPTY_FILE"}), 400
 
-    ext = upload.filename.rsplit(".", 1)[-1].lower() if "." in upload.filename else ""
-    if ext not in ALLOWED_EXTENSIONS:
-        return jsonify({
-            "success": False,
-            "error": "Unsupported file type",
-            "code": "BAD_EXTENSION",
-            "allowed": sorted(ALLOWED_EXTENSIONS)
-        }), 415
-
+    # Validate the bytes, not the filename. Phones commonly upload images
+    # with .heic/.jfif/.tmp extensions or no extension at all, which used to be
+    # rejected as "Unsupported file type" even when the content was a valid
+    # JPG/PNG. The engine now decodes the bytes and reports a real error if the
+    # content cannot be read.
     requested_lang = (request.form.get("lang") or "eng").strip()
     try:
         result = ocr_engine.extract_text(data, filename=upload.filename, lang=requested_lang)
@@ -114,6 +111,7 @@ def process():
         "preprocessed": True,
         "char_count": len(text) if text else 0,
         "word_count": len(text.split()) if text else 0,
+        "pages": result.get("pages", 1),
         "languages_detected": result.get("languages_detected", [])
     }
     return jsonify(payload)

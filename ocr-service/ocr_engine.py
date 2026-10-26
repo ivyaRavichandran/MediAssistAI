@@ -17,12 +17,14 @@ Preprocessing pipeline:
     7. Adaptive binarisation (foreground text vs background)
 """
 
+import glob
 import io
 import os
 import platform
 import re
 import shutil
 import subprocess
+import tempfile
 import logging
 
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
@@ -53,6 +55,21 @@ SETUP_HINT = (
 )
 
 MAX_DIM = 1800  # cap longest edge before OCR to bound runtime
+
+# PDFs are rasterised with poppler's pdftoppm before OCR. Same auto-detect
+# approach as Tesseract: explicit env override, common MSYS2 paths, then PATH.
+DEFAULT_PDFTOPPM_CANDIDATES = [
+    os.environ.get("PDFTOPPM_CMD"),
+    r"C:\msys64\mingw64\bin\pdftoppm.exe",
+    r"C:\msys64\usr\bin\pdftoppm.exe",
+    "pdftoppm",
+]
+PDFTOPPM_CMD = next(
+    (c for c in DEFAULT_PDFTOPPM_CANDIDATES if c and (os.path.exists(c) or (c == "pdftoppm" and shutil.which("pdftoppm")))),
+    None,
+)
+MAX_PDF_PAGES = 5
+PDF_RENDER_DPI = 200
 
 
 def _find_tesseract():
@@ -209,9 +226,55 @@ def _detect_language(image_png):
         return []
 
 
-def extract_text(image_bytes, filename="upload.png", lang="eng"):
-    """Run OCR and return {text, confidence, languages_detected, raw}."""
-    png = preprocess(image_bytes)
+def _is_pdf(data):
+    """Detect PDFs by their magic bytes rather than the uploaded filename."""
+    return data[:1024].lstrip().startswith(b"%PDF-")
+
+
+def _rasterise_pdf(pdf_bytes):
+    """Render up to MAX_PDF_PAGES pages to PNG using poppler's pdftoppm."""
+    if not PDFTOPPM_CMD:
+        raise OCRUnavailableError(
+            "PDF support requires poppler (pdftoppm). Install it with "
+            "'pacman -S mingw-w64-x86_64-poppler' or set PDFTOPPM_CMD."
+        )
+    exe = PDFTOPPM_CMD if PDFTOPPM_CMD != "pdftoppm" else shutil.which("pdftoppm")
+
+    with tempfile.TemporaryDirectory(prefix="mediassist-pdf-") as tmp:
+        pdf_path = os.path.join(tmp, "input.pdf")
+        with open(pdf_path, "wb") as fh:
+            fh.write(pdf_bytes)
+
+        prefix = os.path.join(tmp, "page")
+        try:
+            subprocess.run(
+                [exe, "-png", "-r", str(PDF_RENDER_DPI),
+                 "-f", "1", "-l", str(MAX_PDF_PAGES), pdf_path, prefix],
+                check=True, capture_output=True, timeout=120
+            )
+        except FileNotFoundError as exc:
+            raise OCRUnavailableError(
+                "pdftoppm was not found. Install poppler or set PDFTOPPM_CMD."
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or b"").decode("utf-8", "replace").strip()
+            raise OCRProcessingError(f"PDF could not be rendered: {detail or exc.returncode}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise OCRProcessingError("PDF rendering timed out") from exc
+
+        pages = sorted(glob.glob(prefix + "*.png"))[:MAX_PDF_PAGES]
+        if not pages:
+            raise OCRProcessingError("PDF has no renderable pages")
+
+        rendered = []
+        for page in pages:
+            with open(page, "rb") as fh:
+                rendered.append(fh.read())
+        return rendered
+
+
+def _extract_from_png(png, lang):
+    """OCR a single preprocessed PNG. Returns (text, confidence, languages, word_confs)."""
     if not _engine.available:
         raise OCRUnavailableError(SETUP_HINT)
 
@@ -226,17 +289,6 @@ def extract_text(image_bytes, filename="upload.png", lang="eng"):
     except Exception as exc:
         raise OCRProcessingError(f"Tesseract OCR failed: {exc}") from exc
 
-    # Assemble text + confidence from the _data dict
-    conf_total, conf_count, words = 0, 0, []
-    for level, text_piece, conf in zip(raw.get("level", []), raw.get("text", []), raw.get("conf", [])):
-        tp = (text_piece or "").strip()
-        if not tp:
-            continue
-        if not tp.isdigit():
-            # Include recognized words
-            pass
-        words.append(conf)
-    # Simpler: use image_to_string for the returned text to preserve line breaks
     try:
         full_text = _engine.run("image_to_string", Image.open(io.BytesIO(png)), lang=requested,
                                 config="--oem 3 --psm 6")
@@ -244,13 +296,31 @@ def extract_text(image_bytes, filename="upload.png", lang="eng"):
         raise OCRProcessingError(f"Tesseract text extraction failed: {exc}") from exc
 
     text = (full_text or "").strip()
-    # Per-word confidence from _data
     confidences = [int(c) for c in raw.get("conf", []) if str(c).lstrip("-").isdigit() and int(c) >= 0]
     confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0.0
+    return text, confidence, langs_detected, confidences
+
+
+def extract_text(image_bytes, filename="upload.png", lang="eng"):
+    """Run OCR on an image or PDF and return {text, confidence, ...}."""
+    pngs = _rasterise_pdf(image_bytes) if _is_pdf(image_bytes) else [preprocess(image_bytes)]
+
+    texts, page_confidences, langs, word_confidences = [], [], [], []
+    for png in pngs:
+        text, confidence, detected, confs = _extract_from_png(png, lang)
+        texts.append(text)
+        if confidence > 0:
+            page_confidences.append(confidence)
+        langs.extend(detected)
+        word_confidences.extend(confs[:50])
+
+    text = "\n\n".join(t for t in texts if t)
+    confidence = round(sum(page_confidences) / len(page_confidences), 1) if page_confidences else 0.0
 
     return {
         "text": text,
         "confidence": confidence,
-        "languages_detected": langs_detected,
-        "raw": {"avg_word_conf": confidence, "word_conf_list": confidences[:50]},
+        "languages_detected": sorted(set(langs)),
+        "pages": len(pngs),
+        "raw": {"avg_word_conf": confidence, "word_conf_list": word_confidences[:50]},
     }

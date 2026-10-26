@@ -131,21 +131,16 @@ async function scanPharmacistPrescription() {
     resultsBox.innerHTML = '';
 
     try {
-        const formData = new FormData();
-        formData.append('file', file, file.name || 'prescription.png');
-        formData.append('lang', 'eng');
-
-        const resp = await fetch('/api/py-ocr', { method: 'POST', body: formData });
-        const data = await resp.json();
-
-        if (!resp.ok || !data.success || !data.text) {
+        // Same engine order as the patient upload: Python/Tesseract first,
+        // then the in-browser engine for plain images.
+        const outcome = await runOcrWithFallback(file, null);
+        if (!outcome.text) {
             status.textContent = '';
-            showToast('OCR could not read this file. Try a clearer image.', 'error');
             return;
         }
 
-        status.textContent = `Text extracted${data.confidence ? ' (confidence ' + Math.round(data.confidence) + '%)' : ''}. Review and edit before verifying.`;
-        const results = parsePrescriptionText(data.text);
+        status.textContent = `Text extracted${outcome.confidence ? ' (confidence ' + Math.round(outcome.confidence) + '%)' : ''}. Review and edit before verifying.`;
+        const results = parsePrescriptionText(outcome.text);
         renderPharmacistScan(results);
     } catch (e) {
         status.textContent = '';

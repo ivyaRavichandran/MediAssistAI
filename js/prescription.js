@@ -35,7 +35,13 @@ async function getOcrStatus(force = false) {
 }
 
 function handleFile(file) {
-    if (!file.type.match(/image\/(jpeg|jpg|png|gif|webp)|application\/pdf/)) {
+    // Accept by MIME type *or* extension: phone uploads often report
+    // image/jpeg while carrying a .jfif/.heic name, and some browsers send an
+    // empty type. The OCR engine validates the actual bytes.
+    const looksLikeFile = (file.type || '').startsWith('image/') ||
+        file.type === 'application/pdf' ||
+        /\.(jpe?g|png|gif|webp|bmp|tiff?|pdf|jfif|heic|heif)$/i.test(file.name || '');
+    if (!looksLikeFile) {
         showToast('Please upload an image or PDF file', 'error');
         return;
     }
@@ -160,12 +166,20 @@ async function ocrWithPythonService(file, stepEl) {
 
         const resp = await fetch('/api/py-ocr', { method: 'POST', body: formData });
         if (!resp.ok) {
-            console.warn('Python OCR service returned', resp.status);
+            let detail = '';
+            try {
+                const err = await resp.json();
+                detail = err.error || err.code || '';
+            } catch (e) { /* non-JSON error body */ }
+            console.warn('Python OCR service returned', resp.status, detail);
             return null;
         }
 
         const data = await resp.json();
-        if (!data.success || typeof data.text !== 'string') return null;
+        if (!data.success || typeof data.text !== 'string') {
+            console.warn('Python OCR service returned no text:', data.error || data.code || data);
+            return null;
+        }
 
         return {
             text: data.text.trim(),
@@ -297,10 +311,20 @@ function fileToBase64(file) {
 }
 
 function preprocessImage(file) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+        // The browser engine only understands raster images. PDFs are handled
+        // by the Python service (which rasterises them); if it is offline we
+        // must fail clearly instead of hanging on an Image that never loads.
+        if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) {
+            reject(new Error('PDF OCR needs the Python OCR service. Start it with "npm run ocr".'));
+            return;
+        }
+
         const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Could not read the selected file.'));
         reader.onload = () => {
             const img = new Image();
+            img.onerror = () => reject(new Error('This image format cannot be read by the browser OCR engine. Try JPG or PNG.'));
             img.onload = () => {
                 const canvas = document.createElement('canvas');
                 const scale = 2;
@@ -355,7 +379,11 @@ function preprocessImage(file) {
                 ctx.putImageData(imageData, 0, 0);
 
                 canvas.toBlob((blob) => {
-                    resolve(blob || file);
+                    if (!blob) {
+                        reject(new Error('Could not prepare the image for OCR.'));
+                        return;
+                    }
+                    resolve(blob);
                 }, 'image/png');
             };
             img.src = reader.result;
